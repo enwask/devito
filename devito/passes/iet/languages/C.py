@@ -9,6 +9,7 @@ from devito.tools import CustomNpType
 __all__ = ['CBB', 'CDataManager', 'COrchestrator']
 
 
+CHalf = CustomNpType('__fp16', np.float16)
 CCFloat = CustomNpType('_Complex float', np.complex64)
 CCDouble = CustomNpType('_Complex double', np.complex128)
 
@@ -29,7 +30,7 @@ class CBB(LangBB):
             Call('memcpy', (i, j, k)),
         # Complex
         'header-complex': 'complex.h',
-        'types': {np.complex128: CCDouble, np.complex64: CCFloat},
+        'types': {np.complex128: CCDouble, np.complex64: CCFloat, np.float16: CHalf},
     }
 
 

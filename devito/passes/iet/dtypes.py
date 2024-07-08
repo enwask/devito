@@ -1,22 +1,38 @@
 import numpy as np
-import ctypes
 
 from devito.ir import FindSymbols, Uxreplace
 
-__all__ = ['lower_complex']
+__all__ = ['lower_dtypes']
+
+def lower_dtypes(iet, lang, compiler):
+    """
+    Add headers for complex arithmetic and lower language-specific dtypes
+    """
+    # Check for complex numbers that always take dtype precedence
+    types = {f.dtype for f in FindSymbols().visit(iet) 
+             if issubclass(f.dtype, np.generic)}
+
+    metadata = {}
+    if any(np.issubdtype(d, np.complexfloating) for d in types):
+        metadata = _complex_includes(lang, compiler)
+
+    # Map dtypes to language-specific types
+    mapper = {}
+    for s in FindSymbols('indexeds|symbolics').visit(iet):
+        if s.dtype in lang['types']:
+            mapper[s] = s._rebuild(dtype=lang['types'][s.dtype])
+
+    body = Uxreplace(mapper).visit(iet.body)
+    params = Uxreplace(mapper).visit(iet.parameters)
+    iet = iet._rebuild(body=body, parameters=params)
+
+    return iet, metadata
 
 
-def lower_complex(iet, lang, compiler):
+def _complex_includes(lang, compiler):
     """
     Add headers for complex arithmetic
     """
-    # Check if there is complex numbers that always take dtype precedence
-    types = {f.dtype for f in FindSymbols().visit(iet)
-             if not issubclass(f.dtype, ctypes._Pointer)}
-
-    if not any(np.issubdtype(d, np.complexfloating) for d in types):
-        return iet, {}
-
     lib = (lang['header-complex'],)
 
     metadata = {}
@@ -31,28 +47,5 @@ def lower_complex(iet, lang, compiler):
             ff.write(str(lang['def-complex']))
         lib += (str(hfile),)
 
-    iet = _complex_dtypes(iet, lang)
     metadata['includes'] = lib
-
-    return iet, metadata
-
-
-def _complex_dtypes(iet, lang):
-    """
-    Lower dtypes to language specific types
-    """
-    mapper = {}
-
-    for s in FindSymbols('indexeds').visit(iet):
-        if s.dtype in lang['types']:
-            mapper[s] = s._rebuild(dtype=lang['types'][s.dtype])
-
-    for s in FindSymbols().visit(iet):
-        if s.dtype in lang['types']:
-            mapper[s] = s._rebuild(dtype=lang['types'][s.dtype])
-
-    body = Uxreplace(mapper).visit(iet.body)
-    params = Uxreplace(mapper).visit(iet.parameters)
-    iet = iet._rebuild(body=body, parameters=params)
-
-    return iet
+    return metadata
