@@ -1347,7 +1347,7 @@ class TimeFunction(Function):
 
         # Check we won't allocate too much memory for the system
         available_mem = virtual_memory().available
-        if np.dtype(self.dtype).itemsize * self.size > available_mem:
+        if 'function' not in kwargs and np.dtype(self.dtype).itemsize * self.size > available_mem:
             warning("Trying to allocate more memory for symbol %s " % self.name +
                     "than available on physical device, this will start swapping")
         if not isinstance(self.time_order, int):
