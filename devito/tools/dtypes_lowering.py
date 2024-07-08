@@ -147,6 +147,10 @@ def dtype_to_ctype(dtype):
     """Translate numpy.dtype into a ctypes type."""
     if isinstance(dtype, CustomDtype):
         return dtype
+    
+    if dtype == np.float16:
+        # No ctype exists for float16
+        return np.ctypeslib.as_ctypes_type(np.uint16)
 
     try:
         return ctypes_vector_mapper[dtype]
