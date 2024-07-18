@@ -896,6 +896,15 @@ class AbstractFunction(sympy.Function, Basic, Pickable, Evaluable):
         # no-op, the true init is performed by __init_finalize__
         pass
 
+    def _rebuild(self, *args, **kwargs):
+        # If .function is a self-reference, don't keep it in the rebuilt object
+        if self.function is self:
+            # Constructor assigns a reference to the new object if we pass None
+            function = kwargs.get('function', None)
+            kwargs['function'] = None if function is self else function
+
+        return super()._rebuild(*args, **kwargs)
+
     def __str__(self):
         return "%s(%s)" % (self.name, ', '.join(str(i) for i in self.indices))
 
