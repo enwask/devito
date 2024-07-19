@@ -43,6 +43,8 @@ class EnrichedTuple(tuple, Pickable):
     A tuple with an arbitrary number of additional attributes.
     """
 
+    __rkwargs__ = ('getters',)
+
     def __new__(cls, *items, getters=None, **kwargs):
         obj = super().__new__(cls, items)
         obj.__dict__.update(kwargs)
@@ -75,6 +77,11 @@ class EnrichedTuple(tuple, Pickable):
 
     def get(self, key, val=None):
         return self._getters.get(key, val)
+
+    @cached_property
+    def getters(self):
+        # Needed for `Pickable._rebuild`
+        return list(self._getters)
 
 
 class ReducerMap(MultiDict):
