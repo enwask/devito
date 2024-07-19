@@ -1,6 +1,6 @@
 from collections import OrderedDict, deque
 from collections.abc import Callable, Iterable, MutableSet, Mapping, Set
-from functools import reduce
+from functools import cached_property, reduce
 
 import numpy as np
 from multidict import MultiDict
@@ -43,10 +43,15 @@ class EnrichedTuple(tuple, Pickable):
     A tuple with an arbitrary number of additional attributes.
     """
 
+    __rargs__ = ('*values',)
+    __rkwargs__ = ('getters',)
+
     def __new__(cls, *items, getters=None, **kwargs):
         obj = super().__new__(cls, items)
         obj.__dict__.update(kwargs)
-        obj._getters = OrderedDict(zip(getters or [], items))
+        if getters is not None or '_getters' not in kwargs:
+            # Don't override _getters if getters=None
+            obj._getters = OrderedDict(zip(getters or (), items))
         return obj
 
     def __getitem__(self, key):
@@ -75,6 +80,16 @@ class EnrichedTuple(tuple, Pickable):
 
     def get(self, key, val=None):
         return self._getters.get(key, val)
+
+    @property
+    def values(self) -> tuple:
+        # Needed for rargs
+        return self
+
+    @cached_property
+    def getters(self) -> tuple:
+        # Needed for the rkwarg
+        return tuple(self._getters)
 
 
 class ReducerMap(MultiDict):
