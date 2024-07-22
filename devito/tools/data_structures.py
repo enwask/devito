@@ -38,20 +38,17 @@ class Bunch:
 
 
 class EnrichedTuple(tuple, Pickable):
-
     """
     A tuple with an arbitrary number of additional attributes.
     """
 
-    __rargs__ = ('*values',)
+    __rargs__ = ('*items',)
     __rkwargs__ = ('getters',)
 
     def __new__(cls, *items, getters=None, **kwargs):
         obj = super().__new__(cls, items)
         obj.__dict__.update(kwargs)
-        if getters is not None or '_getters' not in kwargs:
-            # Don't override _getters if getters=None
-            obj._getters = OrderedDict(zip(getters or (), items))
+        obj._getters = OrderedDict(zip(getters or [], items))
         return obj
 
     def __getitem__(self, key):
@@ -76,15 +73,18 @@ class EnrichedTuple(tuple, Pickable):
     def __getnewargs_ex__(self):
         # Bypass default reconstruction logic since this class spawns
         # objects with varying number of attributes
-        return (tuple(self), dict(self.__dict__))
+        kwargs = dict(self.__dict__)
+        kwargs['getters'] = list(kwargs.pop('_getters', []))
+
+        return tuple(self), kwargs
 
     def get(self, key, val=None):
         return self._getters.get(key, val)
 
     @property
-    def values(self) -> tuple:
+    def items(self) -> tuple:
         # Needed for rargs
-        return self
+        return tuple(self)
 
     @cached_property
     def getters(self) -> tuple:

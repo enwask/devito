@@ -24,6 +24,12 @@ CELL = Stagger('cell')
 
 class DimensionTuple(EnrichedTuple):
 
+    __rkwargs__ = EnrichedTuple.__rkwargs__ + ('left', 'right')
+
+    def __new__(cls, *args, getters=None, left=None, right=None, **kwargs):
+        return super().__new__(cls, *args, getters=getters,
+                               left=left, right=right, **kwargs)
+
     def __getitem_hook__(self, dim):
         for d in self._getters:
             if d._defines & dim._defines:
