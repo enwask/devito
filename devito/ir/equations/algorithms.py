@@ -1,8 +1,9 @@
 from collections.abc import Iterable
-from functools import singledispatch
+from functools import partial, singledispatch
 
 from devito.symbolics import (retrieve_indexed, uxreplace, retrieve_dimensions,
                               retrieve_functions)
+from devito.threading.executor import PoolExecutor
 from devito.tools import (Ordering, as_tuple, flatten, filter_sorted, filter_ordered,
                           frozendict)
 from devito.types import (Dimension, Eq, IgnoreDimSort, SubDimension,
@@ -107,54 +108,81 @@ def lower_exprs(expressions, subs=None, **kwargs):
     --------
     f(x - 2*h_x, y) -> f[xi + 2, yi + 4]  (assuming halo_size=4)
     """
-    return _lower_exprs(expressions, subs or {})
+    return _lower_exprs_threaded(expressions, subs or {})
+
+
+def _lower_expr(expr, subs):
+    """
+    Lower a single expression.
+    """
+    dimension_map = _make_dimension_map(expr)
+
+    # Handle Functions (typical case)
+    mapper = {f: _lower_exprs(f.indexify(subs=dimension_map), subs)
+              for f in expr.find(AbstractFunction)}
+
+    # Handle Indexeds (from index notation)
+    for i in retrieve_indexed(expr):
+        f = i.function
+
+        # Introduce shifting to align with the computational domain
+        indices = [_lower_exprs(a, subs) + o for a, o in
+                   zip(i.indices, f._size_nodomain.left)]
+
+        # Substitute spacing (spacing only used in own dimension)
+        indices = [i.xreplace({d.spacing: 1, -d.spacing: -1})
+                   for i, d in zip(indices, f.dimensions)]
+
+        # Apply substitutions, if necessary
+        if dimension_map:
+            indices = [j.xreplace(dimension_map) for j in indices]
+
+        # Handle Array
+        if isinstance(f, Array) and f.initvalue is not None:
+            initvalue = [_lower_exprs(i, subs) for i in f.initvalue]
+            # TODO: fix rebuild to avoid new name
+            f = f._rebuild(name='%si' % f.name, initvalue=initvalue)
+
+        mapper[i] = f.indexed[indices]
+    # Add dimensions map to the mapper in case dimensions are used
+    # as an expression, i.e. Eq(u, x, subdomain=xleft)
+    mapper.update(dimension_map)
+    # Add the user-supplied substitutions
+    mapper.update(subs)
+    # Apply mapper to expression
+    return uxreplace(expr, mapper)
 
 
 def _lower_exprs(expressions, subs):
-    processed = []
-    for expr in as_tuple(expressions):
-        dimension_map = _make_dimension_map(expr)
+    """
+    Lowers a single expression or list of expressions on a single thread.
+    """
+    if not isinstance(expressions, Iterable):
+        # If we have a single expression, lower it and return
+        return _lower_expr(expressions, subs)
 
-        # Handle Functions (typical case)
-        mapper = {f: _lower_exprs(f.indexify(subs=dimension_map), subs)
-                  for f in expr.find(AbstractFunction)}
+    # Otherwise lower synchronously
+    return [_lower_expr(expr, subs) for expr in expressions]
 
-        # Handle Indexeds (from index notation)
-        for i in retrieve_indexed(expr):
-            f = i.function
 
-            # Introduce shifting to align with the computational domain
-            indices = [_lower_exprs(a, subs) + o for a, o in
-                       zip(i.indices, f._size_nodomain.left)]
+def _lower_exprs_threaded(expressions, subs):
+    """
+    Lowers a single expression or list of expressions in parallel.
+    """
+    # If we have a single expression, lower it and return
+    if not isinstance(expressions, Iterable):
+        return _lower_expr(expressions, subs)
 
-            # Substitute spacing (spacing only used in own dimension)
-            indices = [i.xreplace({d.spacing: 1, -d.spacing: -1})
-                       for i, d in zip(indices, f.dimensions)]
+    # Otherwise, distribute lowering
+    # TODO: This defaults to using all available cores or threads; will take
+    #       some tuning of chunk_size on executor.map to avoid slowing down
+    #       lowering (as relative overhead is very high for small expressions)
+    with PoolExecutor() as executor:
+        # Lower expressions in parallel
+        _lower = partial(_lower_expr, subs=subs)
+        processed = list(executor.map(_lower, expressions))
 
-            # Apply substitutions, if necessary
-            if dimension_map:
-                indices = [j.xreplace(dimension_map) for j in indices]
-
-            # Handle Array
-            if isinstance(f, Array) and f.initvalue is not None:
-                initvalue = [_lower_exprs(i, subs) for i in f.initvalue]
-                # TODO: fix rebuild to avoid new name
-                f = f._rebuild(name='%si' % f.name, initvalue=initvalue)
-
-            mapper[i] = f.indexed[indices]
-        # Add dimensions map to the mapper in case dimensions are used
-        # as an expression, i.e. Eq(u, x, subdomain=xleft)
-        mapper.update(dimension_map)
-        # Add the user-supplied substitutions
-        mapper.update(subs)
-        # Apply mapper to expression
-        processed.append(uxreplace(expr, mapper))
-
-    if isinstance(expressions, Iterable):
         return processed
-    else:
-        assert len(processed) == 1
-        return processed.pop()
 
 
 def _make_dimension_map(expr):
