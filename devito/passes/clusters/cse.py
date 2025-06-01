@@ -1,9 +1,12 @@
 from collections import defaultdict, Counter
 from functools import cached_property, singledispatch
+from typing import Any
 
 import numpy as np
 import sympy
 from sympy import Add, Function, Indexed, Mul, Pow
+
+from devito.tools.threading import is_free_threading
 try:
     from sympy.core.core import ordering_of_classes
 except ImportError:
