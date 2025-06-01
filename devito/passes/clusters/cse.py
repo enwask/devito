@@ -1,9 +1,13 @@
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from functools import cached_property, singledispatch
+from typing import Any
 
 import numpy as np
 import sympy
 from sympy import Add, Function, Indexed, Mul, Pow
+
+from devito.tools.threading import is_free_threading
 try:
     from sympy.core.core import ordering_of_classes
 except ImportError:
@@ -225,17 +229,29 @@ def _compact(exprs, exclude):
 
     mapper = {e.lhs: e.rhs for e in candidates if q_leaf(e.rhs)}
 
-    mapper.update({e.lhs: e.rhs for e in candidates
-                   if sum([i.rhs.count(e.lhs) for i in exprs]) == 1})
+    def _is_dropped(expr) -> bool:
+        """Checks whether an expression can be dropped."""
+        return sum(i.rhs.count(expr.lhs) for i in exprs) == 1
 
-    processed = []
-    for e in exprs:
-        if e.lhs not in mapper:
-            # The temporary is retained, and substitutions may be applied
-            expr, changed = e, True
-            while changed:
-                expr, changed = _uxreplace(expr, mapper)
-            processed.append(expr)
+    def _map_expr(expr):
+        """Applies the mapper to an expression."""
+        expr, changed = _uxreplace(expr, mapper)
+        while changed:
+            expr, changed = _uxreplace(expr, mapper)
+        return expr
+
+    if is_free_threading():
+        # If the GIL is disabled, we can parallelize for a substantial speedup
+        with ThreadPoolExecutor() as pool:
+            dropped = pool.map(_is_dropped, candidates)
+            mapper.update({e.lhs: e.rhs for e, d in zip(candidates, dropped) if d})
+
+            to_map = (e for e in exprs if e.lhs not in mapper)
+            processed = list(pool.map(_map_expr, to_map))
+    else:
+        # The GIL is enabled; threading would be slower than serial
+        mapper.update({e.lhs: e.rhs for e in candidates if _is_dropped(e)})
+        processed = list(map(_map_expr, (e for e in exprs if e.lhs not in mapper)))
 
     return processed
 
