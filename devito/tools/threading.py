@@ -105,12 +105,12 @@ def get_executor() -> GenericExecutor:
     instance of `ThreadPoolExecutor`; otherwise, it's an executor that runs tasks in
     serial (which defers to e.g. the built-in `map` function).
     """
-    global _global_thread_pool
+    global _global_executor
 
-    if _global_thread_pool is None:
+    if _global_executor is None:
         if is_free_threading():
-            _global_thread_pool = ThreadPoolExecutor()
+            _global_executor = ThreadPoolExecutor()
         else:
-            _global_thread_pool = SerialExecutor()
+            _global_executor = SerialExecutor()
 
-    return _global_thread_pool
+    return _global_executor
