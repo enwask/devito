@@ -1,5 +1,5 @@
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
-from typing import Callable, Iterable, Optional, TypeVar
+from typing import Callable, Iterable, TypeVar
 import sys
 import threading
 
@@ -62,7 +62,7 @@ class GenericExecutor(Executor):
     """
     A generic executor that can be used to submit tasks and retrieve results. May be a
     `ThreadPoolExecutor` or a `SerialExecutor`, depending on whether free threading is
-    available (i.e., the GIL is disabled).
+    available (i.e., whether the GIL is disabled).
 
     Exists to provide typing for `Executor.map`.
     """
@@ -80,6 +80,9 @@ class SerialExecutor(GenericExecutor):
     """
     A serial executor that runs tasks in the current thread, with the same interface as
     `ThreadPoolExecutor`. This is used when free threading is not available.
+
+    Serial execution ignores all arguments that would be relevant for
+    `ThreadPoolExecutor` or `ProcessPoolExecutor`, including timeouts etc.
     """
 
     def submit(self, fn, /, *args, **kwargs):
@@ -95,22 +98,20 @@ class SerialExecutor(GenericExecutor):
 
         return future
 
-
-_global_executor: Optional[GenericExecutor] = None
+    def map(self, fn, *iterables, **_):
+        return (fn(*args) for args in zip(*iterables))
 
 
 def get_executor() -> GenericExecutor:
     """
-    Returns the global thread pool executor instance. With free threading, this is an
-    instance of `ThreadPoolExecutor`; otherwise, it's an executor that runs tasks in
-    serial (which defers to e.g. the built-in `map` function).
+    Returns a new executor for mapping tasks. With free threading, this is an instance of
+    `ThreadPoolExecutor`; otherwise, it's an executor that runs tasks in serial (which
+    is equivalent to e.g. the built-in `map` function).
+
+    The resulting executor should be used as a context manager.
     """
-    global _global_executor
 
-    if _global_executor is None:
-        if is_free_threading():
-            _global_executor = ThreadPoolExecutor()
-        else:
-            _global_executor = SerialExecutor()
-
-    return _global_executor
+    if is_free_threading():
+        return ThreadPoolExecutor()
+    else:
+        return SerialExecutor()

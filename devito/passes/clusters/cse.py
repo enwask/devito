@@ -240,18 +240,12 @@ def _compact(exprs, exclude):
             expr, changed = _uxreplace(expr, mapper)
         return expr
 
-    if is_free_threading():
-        # If the GIL is disabled, we can parallelize for a substantial speedup
-        pool = get_executor()
-        dropped = pool.map(_is_dropped, candidates)
+    with get_executor() as executor:
+        dropped = executor.map(_is_dropped, candidates)
         mapper.update({e.lhs: e.rhs for e, d in zip(candidates, dropped) if d})
 
         to_map = (e for e in exprs if e.lhs not in mapper)
-        processed = list(pool.map(_map_expr, to_map))
-    else:
-        # The GIL is enabled; threading would be slower than serial
-        mapper.update({e.lhs: e.rhs for e in candidates if _is_dropped(e)})
-        processed = list(map(_map_expr, (e for e in exprs if e.lhs not in mapper)))
+        processed = list(executor.map(_map_expr, to_map))
 
     return processed
 
