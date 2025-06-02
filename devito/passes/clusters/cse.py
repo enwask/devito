@@ -6,7 +6,6 @@ import numpy as np
 import sympy
 from sympy import Add, Function, Indexed, Mul, Pow
 
-from devito.tools.threading import is_free_threading
 try:
     from sympy.core.core import ordering_of_classes
 except ImportError:
@@ -19,6 +18,7 @@ from devito.symbolics import estimate_cost, q_leaf, q_terminal
 from devito.symbolics.search import search
 from devito.symbolics.manipulation import _uxreplace
 from devito.tools import DAG, as_list, as_tuple, frozendict, extract_dtype
+from devito.tools.threading import get_executor, is_free_threading
 from devito.types import Eq, Symbol, Temp
 
 __all__ = ['cse']
