@@ -7,7 +7,6 @@ import numpy as np
 import sympy
 from sympy import Add, Function, Indexed, Mul, Pow
 
-from devito.tools.threading import is_free_threading
 try:
     from sympy.core.core import ordering_of_classes
 except ImportError:
@@ -19,6 +18,7 @@ from devito.ir import Cluster, Scope, cluster_pass
 from devito.symbolics import estimate_cost, q_leaf, q_terminal
 from devito.symbolics.manipulation import _uxreplace
 from devito.tools import DAG, as_list, as_tuple, frozendict, extract_dtype
+from devito.tools.threading import get_executor, is_free_threading
 from devito.types import Eq, Symbol, Temp
 
 __all__ = ['cse']
@@ -242,12 +242,12 @@ def _compact(exprs, exclude):
 
     if is_free_threading():
         # If the GIL is disabled, we can parallelize for a substantial speedup
-        with ThreadPoolExecutor() as pool:
-            dropped = pool.map(_is_dropped, candidates)
-            mapper.update({e.lhs: e.rhs for e, d in zip(candidates, dropped) if d})
+        pool = get_executor()
+        dropped = pool.map(_is_dropped, candidates)
+        mapper.update({e.lhs: e.rhs for e, d in zip(candidates, dropped) if d})
 
-            to_map = (e for e in exprs if e.lhs not in mapper)
-            processed = list(pool.map(_map_expr, to_map))
+        to_map = (e for e in exprs if e.lhs not in mapper)
+        processed = list(pool.map(_map_expr, to_map))
     else:
         # The GIL is enabled; threading would be slower than serial
         mapper.update({e.lhs: e.rhs for e in candidates if _is_dropped(e)})
