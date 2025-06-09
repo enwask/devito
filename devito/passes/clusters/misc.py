@@ -1,5 +1,6 @@
 from collections import Counter, defaultdict
-from itertools import groupby, product
+from functools import reduce
+from itertools import chain, groupby, product
 
 from devito.finite_differences import IndexDerivative
 from devito.ir.clusters import Cluster, ClusterGroup, Queue, cluster_pass
@@ -364,7 +365,15 @@ class Fusion(Queue):
                 # * All ClusterGroups after `cg1` cannot precede `cg1`
 
                 # FIXME: Slow
-                if any(i.cause & prefix for i in scope.d_anti_gen()):
+                # if any(i.cause & prefix for i in scope.d_anti_gen()):
+
+                # def _union(a: set, b: set) -> set:
+                #     if len(a) > len(b): return a.union(b)
+                #     return b.union(a)
+                # antideps = reduce(_union, (i.cause for i in scope.d_anti_gen()), set())
+
+                antideps = set(chain(i.cause for i in scope.d_anti_gen()))
+                if antideps & prefix:
                     for cg2 in cgroups[n:cgroups.index(cg1)]:
                         dag.add_edge(cg2, cg1)
                     for cg2 in cgroups[cgroups.index(cg1)+1:]:
