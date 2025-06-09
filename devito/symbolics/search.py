@@ -160,7 +160,7 @@ def retrieve_symbols(exprs, mode='all'):
 
 
 def retrieve_ctemps(exprs, mode='all'):
-    """Shorthamd to retrieve the CTemps in `exprs`"""
+    """Shorthand to retrieve the CTemps in `exprs`"""
     return search(exprs, q_ctemp, mode, 'dfs')
 
 
