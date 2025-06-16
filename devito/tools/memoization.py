@@ -1,18 +1,29 @@
 from collections import defaultdict
 from collections.abc import Hashable, Iterator
-from functools import partial, wraps
-from itertools import tee
+from functools import partial, update_wrapper, wraps
 from threading import RLock
-from typing import Any, Callable, TypeVar
+from typing import Callable, Generic, Protocol, TypeVar
+
 
 __all__ = ['has_memoized_methods', 'memoized_meth', 'memoized_generator']
 
 
+InstanceType = TypeVar('InstanceType', bound=object)
 ReturnType = TypeVar('ReturnType')
-MethodType = Callable[..., ReturnType]
+CachedType = TypeVar('CachedType')
 
 
-def has_memoized_methods(cls: type) -> type:
+class Method(Generic[InstanceType, ReturnType], Protocol):
+    """
+    Protocol for an instance method
+    """
+
+    def __call__(self, obj: InstanceType,
+                 *args: Hashable, **kwargs: Hashable) -> ReturnType:
+        ...
+
+
+def has_memoized_methods(cls: type[InstanceType]) -> type[InstanceType]:
     """
     Class decorator to provide instance-level caches for methods decorated with
     `@memoized_meth`. If this initialization were done in the decorated methods,
@@ -30,8 +41,8 @@ def has_memoized_methods(cls: type) -> type:
         @wraps(init_finalize)
         def _init_finalize(obj, *args, **kwargs) -> None:
             # Apply our caches first
-            obj.__method_cache = {}
-            obj.__method_locks = defaultdict(RLock)
+            obj._memoized_method_cache = {}
+            obj._memoized_method_locks = defaultdict(RLock)
 
             # Call the original __init_finalize__ method
             init_finalize(obj, *args, **kwargs)
@@ -57,8 +68,8 @@ def has_memoized_methods(cls: type) -> type:
             obj = new(_cls, *args, **kwargs)
 
         # Initialize the method cache and locks
-        obj.__method_cache = {}
-        obj.__method_locks = defaultdict(RLock)
+        obj._memoized_method_cache = {}
+        obj._memoized_method_locks = defaultdict(RLock)
 
         return obj
 
@@ -70,7 +81,7 @@ def has_memoized_methods(cls: type) -> type:
     return cls
 
 
-def memoized_meth(meth: MethodType[ReturnType]) -> MethodType[ReturnType]:
+class memoized_meth(Generic[InstanceType, ReturnType, CachedType]):
     """
     Decorator for a thread-safe (concurrent read + write) cache of instance methods.
 
@@ -78,37 +89,70 @@ def memoized_meth(meth: MethodType[ReturnType]) -> MethodType[ReturnType]:
     `@has_memoized_methods`. If the class decorator is not present, a RuntimeError will
     be raised upon invocation of the wrapped method.
     """
-    # A global (to the method) lock used to ensure per-instance locks are created safely
-    _global_lock = RLock()
 
-    @wraps(meth)
-    def _meth(obj, *args: Hashable, **kwargs: Hashable) -> ReturnType:
+    def __init__(self, meth: Method[InstanceType, ReturnType]) -> None:
+        self._meth = meth
+        self._lock = RLock()  # Global lock for safely initializing per-instance locks
+        update_wrapper(self, meth)
+
+    def _acquire_method_lock(self, obj: InstanceType,
+                             *args: Hashable, **kwargs: Hashable) -> RLock:
+        """
+        Acquires a lock for the method call on the given object and arguments.
+        """
+        # Briefly use the global lock to safely access the per-instance lock in
+        # case it hasn't been initialized yet
+        with self._lock:
+            # TODO: Should we lock on the full method call for more granularity?
+            return obj._memoized_method_locks[self._meth]
+
+    def _to_cached(self, value: ReturnType) -> CachedType:
+        """
+        Converts the return value of the method to a cached type.
+        This can be overridden in subclasses to customize caching behavior.
+        """
+        return value
+
+    def _from_cached(self, value: CachedType) -> ReturnType:
+        """
+        Converts the cached value back to the original return type.
+        This can be overridden in subclasses to customize caching behavior.
+        """
+        return value
+
+    def __get__(self, obj: InstanceType,
+                cls: type[InstanceType] | None = None) -> Callable[..., ReturnType]:
+        """
+        Binds the memoized method to an instance.
+        """
+        if obj is None:
+            return self
+
+        return partial(self, obj)
+
+    def __call__(self, obj: InstanceType,
+                 *args: Hashable, **kwargs: Hashable) -> ReturnType:
+        """
+        Invokes the memoized method, caching the result if it hasn't been evaluated yet.
+        """
         try:
-            cache: dict[int, ReturnType] = obj.__method_cache
-            locks: defaultdict[MethodType[Any], RLock] = obj.__method_locks
+            cache: dict[int, CachedType] = obj._memoized_method_cache
 
             # If arguments are not hashable, just evaluate the method directly
             if not isinstance(args, Hashable):
-                return meth(obj, *args, **kwargs)
+                return self._meth(obj, *args, **kwargs)
 
             # Key for the method call with all arguments
-            key = hash((meth, args, frozenset(kwargs.items())))
+            key = hash((self._meth, args, frozenset(kwargs.items())))
 
-            # Briefly use the global lock to safely access the per-instance lock if it
-            # hasn't been initialized yet
-            with _global_lock:
-                lock = locks[meth]
-
-            # Lock on the method
-            # TODO: Should we lock on arguments for more granularity?
-            with lock:
+            with self._acquire_method_lock(obj, *args, **kwargs):
                 if key not in cache:
                     # If the result is not cached, call the method and cache the result
-                    result = meth(obj, *args, **kwargs)
+                    result = self._to_cached(self._meth(obj, *args, **kwargs))
                     cache[key] = result
                 else:
                     # Otherwise retrieve the cached result
-                    result = cache[key]
+                    result = self._from_cached(cache[key])
             return result
 
         except AttributeError as e:
@@ -118,22 +162,20 @@ def memoized_meth(meth: MethodType[ReturnType]) -> MethodType[ReturnType]:
                                "@has_memoized_methods to use @memoized_meth"
                                % cls.__name__) from e
 
-    return _meth
-
 
 ElementType = TypeVar('ElementType', covariant=True)
-GeneratorType = Callable[..., Iterator[ElementType]]
+GeneratorMethod = Method[InstanceType, Iterator[ElementType]]
 
 
 class SafeTee(Iterator[ElementType]):
     """
     A thread-safe version of `itertools.tee` that allows multiple iterators to safely
     share the same buffer.
-    
+
     This comes at a cost to performance of iterating elements that haven't yet been
     generated, as `itertools.tee` is implemented in C (i.e. is fast) but we need to
     buffer (and lock against that buffer) in Python instead.
-    
+
     However, the lock is not needed for elements that have already been buffered,
     allowing for concurrent iteration after the generator is initially consumed.
     """
@@ -176,13 +218,13 @@ class SafeTee(Iterator[ElementType]):
                 except StopIteration as e:
                     # The source iterator has been exhausted
                     raise StopIteration from e
-    
+
     def __copy__(self) -> 'SafeTee':
         """
         Creates a copy of this iterator that shares the same buffer and lock.
         """
         return SafeTee(self._source_iter, self._buffer, self._lock)
-    
+
     def tee(self) -> Iterator[ElementType]:
         """
         Creates a new iterator that shares the same buffer and lock.
@@ -190,7 +232,8 @@ class SafeTee(Iterator[ElementType]):
         return SafeTee(self._source_iter, self._buffer, self._lock)
 
 
-def memoized_generator(meth: GeneratorType[ElementType]) -> GeneratorType[ElementType]:
+class memoized_generator(memoized_meth[InstanceType, Iterator[ElementType],
+                                       SafeTee[ElementType]]):
     """
     Decorator for a thread-safe cache of instance generator methods.
 
@@ -198,51 +241,22 @@ def memoized_generator(meth: GeneratorType[ElementType]) -> GeneratorType[Elemen
     `@has_memoized_methods`. If the class decorator is not present, a RuntimeError will
     be raised upon invocation of the wrapped method.
 
-    The decorated generator method should be evaluated only once per unique set of
-    arguments, and the results will be cached for subsequent calls via a thread-safe
-    version of `itertools.tee`.
+    The decorated generator method will be evaluated only once per unique argument set,
+    and the result will be cached for subsequent calls via a thread-safe version of
+    `itertools.tee`.
     """
 
-    # A global (to the method) lock used to ensure per-instance locks are created safely
-    _global_lock = RLock()
+    def __init__(self, meth: GeneratorMethod[InstanceType, ElementType]) -> None:
+        super().__init__(meth)
 
-    @wraps(meth)
-    def _meth(obj, *args: Hashable, **kwargs: Hashable) -> Iterator[ElementType]:
-        try:
-            cache: dict[int, SafeTee[ElementType]] = obj.__method_cache
-            locks: defaultdict[GeneratorType[Any], RLock] = obj.__method_locks
+    def _to_cached(self, value: Iterator[ElementType]) -> SafeTee[ElementType]:
+        """
+        Caches the returned generator wrapped in a SafeTee for buffer sharing.
+        """
+        return SafeTee(value)
 
-            # If arguments are not hashable, just evaluate the method directly
-            if not isinstance(args, Hashable):
-                return meth(obj, *args, **kwargs)
-
-            # Key for the method call with all arguments
-            key = hash((meth, args, frozenset(kwargs.items())))
-
-            # Briefly use the global lock to safely access the per-instance lock if it
-            # hasn't been initialized yet
-            with _global_lock:
-                lock = locks[meth]
-
-            # Lock on the method
-            # TODO: Should we lock on arguments for more granularity?
-            with lock:
-                if key not in cache:
-                    # If the result is not cached, call the method and cache the result
-                    source_tee = SafeTee(meth(obj, *args, **kwargs))
-                    cache[key] = source_tee
-                else:
-                    # Otherwise retrieve the cached result
-                    source_tee = cache[key]
-
-            # Safely tee the cached generator
-            return source_tee.tee()
-
-        except AttributeError as e:
-            # If the cache is missing, the class doesn't have the required decorator
-            cls = type(obj)
-            raise RuntimeError("Class '%s' must be decorated with "
-                               "@has_memoized_methods to use @memoized_generator"
-                               % cls.__name__) from e
-
-    return _meth
+    def _from_cached(self, value: SafeTee[ElementType]) -> Iterator[ElementType]:
+        """
+        Safely tees the cached generator, sharing the original buffer and lock.
+        """
+        return value.tee()
