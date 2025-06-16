@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+import random
 from devito import Operator, TimeFunction, Grid, Eq
 from devito.logger import info
 import numpy as np
@@ -54,35 +55,44 @@ def test_memoized_meth_safety():
     """
     Tests that the `memoized_meth` decorator is thread-safe for concurrent invocations.
     """
-    num_threads = 100
-    num_tests = 100
+    num_threads = 100 # Number of threads per test case
+    num_tests = 100 # Number of times to try for a clash
+    seed = 42 # Seed for reproducibility
 
     @has_memoized_methods
     class TestClass:
-        def __init__(self):
+        def __init__(self) -> None:
             self.value = 0
 
         @memoized_meth
-        def increment(self):
-            # self.value should only be incremented once
+        def increment(self, _: int) -> int:
+            # self.value should only be incremented once per unique argument
             self.value += 1
             return self.value
 
-    def do_work(test_instance: TestClass):
+    def do_work(test_instance: TestClass, arg: int) -> int:
         # Wait for all threads to be ready
         barrier.wait()
 
         # Call the memoized method
-        result = test_instance.increment()
+        result = test_instance.increment(arg)
         return result
 
+    random.seed(seed)
     for i in range(num_tests):
         # Create a barrier to synchronize a bunch of calls to the memoized method
         barrier = Barrier(num_threads)
-        test_instance = TestClass()
+        instance = TestClass()
+
+        # Choose a random number of unique arguments to pass to the method
+        num_unique_args = random.randint(1, num_threads)
+
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
-            futures = [executor.submit(do_work, test_instance) for _ in range(num_threads)]
-        
+            futures = [executor.submit(do_work, instance, i % num_unique_args)
+                       for i in range(num_threads)]
+
         # Wait for all threads to complete and collect results
         results = set((f.result() for f in futures))
-        assert len(results) == 1, "increment() should return the same result for all threads"
+        assert len(results) == num_unique_args, ("increment() should return a number of "
+                                                 "unique values equal to unique args")
+
