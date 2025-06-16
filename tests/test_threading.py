@@ -2,7 +2,9 @@ from concurrent.futures import ThreadPoolExecutor
 from devito import Operator, TimeFunction, Grid, Eq
 from devito.logger import info
 import numpy as np
-from threading import current_thread
+from threading import Barrier, current_thread
+
+from devito.tools import has_memoized_methods, memoized_meth
 
 
 def test_concurrent_executing_operators():
@@ -46,3 +48,41 @@ def test_concurrent_executing_operators():
     # Get results - exceptions will be raised here if there are any
     for f in futures:
         f.result()
+
+
+def test_memoized_meth_safety():
+    """
+    Tests that the `memoized_meth` decorator is thread-safe for concurrent invocations.
+    """
+    num_threads = 100
+    num_tests = 100
+
+    @has_memoized_methods
+    class TestClass:
+        def __init__(self):
+            self.value = 0
+
+        @memoized_meth
+        def increment(self):
+            # self.value should only be incremented once
+            self.value += 1
+            return self.value
+
+    def do_work(test_instance: TestClass):
+        # Wait for all threads to be ready
+        barrier.wait()
+
+        # Call the memoized method
+        result = test_instance.increment()
+        return result
+
+    for i in range(num_tests):
+        # Create a barrier to synchronize a bunch of calls to the memoized method
+        barrier = Barrier(num_threads)
+        test_instance = TestClass()
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            futures = [executor.submit(do_work, test_instance) for _ in range(num_threads)]
+        
+        # Wait for all threads to complete and collect results
+        results = set((f.result() for f in futures))
+        assert len(results) == 1, "increment() should return the same result for all threads"
