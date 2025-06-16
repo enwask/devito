@@ -9,7 +9,7 @@ __all__ = ['has_memoized_methods', 'memoized_meth', 'memoized_generator']
 
 
 ReturnType = TypeVar('ReturnType')
-MethodType = TypeVar('MethodType', bound=Callable[..., ReturnType])
+MethodType = Callable[..., ReturnType]
 
 
 def has_memoized_methods(cls: type) -> type:
@@ -23,18 +23,18 @@ def has_memoized_methods(cls: type) -> type:
     # it calls memoized methods during initialization (e.g. SubDimension)
     if hasattr(cls, '__init_finalize__'):
         # Don't modify the class if we've already applied this decorator
-        init = cls.__init_finalize__
-        if hasattr(init, '__has_memoized_methods'):
+        init_finalize = cls.__init_finalize__
+        if hasattr(init_finalize, '__has_memoized_methods'):
             return cls
 
-        @wraps(init)
+        @wraps(init_finalize)
         def _init_finalize(obj, *args, **kwargs) -> None:
             # Apply our caches first
             obj.__method_cache = {}
             obj.__method_locks = defaultdict(RLock)
 
             # Call the original __init_finalize__ method
-            init(obj, *args, **kwargs)
+            init_finalize(obj, *args, **kwargs)
 
         # Set our flag to avoid re-initialization
         _init_finalize.__has_memoized_methods = True
@@ -70,7 +70,7 @@ def has_memoized_methods(cls: type) -> type:
     return cls
 
 
-def memoized_meth(meth: MethodType) -> MethodType:
+def memoized_meth(meth: MethodType[ReturnType]) -> MethodType[ReturnType]:
     """
     Decorator for a thread-safe (concurrent read + write) cache of instance methods.
 
@@ -78,19 +78,23 @@ def memoized_meth(meth: MethodType) -> MethodType:
     `@has_memoized_methods`. If the class decorator is not present, a RuntimeError will
     be raised upon invocation of the wrapped method.
     """
-    # A global lock used to ensure per-method locks are created safely
+    # A global (to the method) lock used to ensure per-instance locks are created safely
     _global_lock = RLock()
 
     @wraps(meth)
-    def _wrapped_meth(obj, *args: Hashable, **kwargs: Hashable) -> ReturnType:
+    def _meth(obj, *args: Hashable, **kwargs: Hashable) -> ReturnType:
         try:
             cache: dict[int, ReturnType] = obj.__method_cache
             locks: defaultdict[MethodType[Any], RLock] = obj.__method_locks
 
-            # Key for the method call with all arguments
-            _key = hash((meth, args, frozenset(kwargs.items())))
+            # If arguments are not hashable, just evaluate the method directly
+            if not isinstance(args, Hashable):
+                return meth(obj, *args, **kwargs)
 
-            # Briefly use the global lock to safely access the per-method lock if it
+            # Key for the method call with all arguments
+            key = hash((meth, args, frozenset(kwargs.items())))
+
+            # Briefly use the global lock to safely access the per-instance lock if it
             # hasn't been initialized yet
             with _global_lock:
                 lock = locks[meth]
@@ -98,13 +102,13 @@ def memoized_meth(meth: MethodType) -> MethodType:
             # Lock on the method
             # TODO: Should we lock on arguments for more granularity?
             with lock:
-                if _key not in cache:
+                if key not in cache:
                     # If the result is not cached, call the method and cache the result
                     result = meth(obj, *args, **kwargs)
-                    cache[_key] = result
+                    cache[key] = result
                 else:
                     # Otherwise retrieve the cached result
-                    result = cache[_key]
+                    result = cache[key]
             return result
 
         except AttributeError as e:
@@ -114,13 +118,7 @@ def memoized_meth(meth: MethodType) -> MethodType:
                                "@has_memoized_methods to use @memoized_meth"
                                % cls.__name__) from e
 
-    return _wrapped_meth
-
-
-class memoized_generator:
-
-    """
-    Decorator. Cache the return value of an instance generator method.
+    return _meth
     """
 
     def __init__(self, func):
