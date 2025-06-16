@@ -8,7 +8,7 @@ from typing import Any, Callable, TypeVar
 __all__ = ['has_memoized_methods', 'memoized_meth', 'memoized_generator']
 
 
-ReturnType = TypeVar('ReturnType', contravariant=True)
+ReturnType = TypeVar('ReturnType')
 MethodType = TypeVar('MethodType', bound=Callable[..., ReturnType])
 
 
