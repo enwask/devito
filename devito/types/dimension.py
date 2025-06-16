@@ -10,7 +10,8 @@ from devito.data import LEFT, RIGHT
 from devito.deprecations import deprecations
 from devito.exceptions import InvalidArgument
 from devito.logger import debug
-from devito.tools import Pickable, is_integer, is_number, memoized_meth
+from devito.tools import (Pickable, is_integer, is_number, has_memoized_methods,
+                          memoized_meth)
 from devito.types.args import ArgProvider
 from devito.types.basic import Symbol, DataSymbol, Scalar
 from devito.types.constant import Constant
@@ -596,6 +597,7 @@ class Thickness(DataSymbol):
         return {self.name: tkn}
 
 
+@has_memoized_methods
 class AbstractSubDimension(DerivedDimension):
 
     """

@@ -1,10 +1,11 @@
 from devito import Function, TimeFunction, DevitoCheckpoint, CheckpointOperator, Revolver
-from devito.tools import memoized_meth
+from devito.tools import has_memoized_methods, memoized_meth
 from examples.seismic.acoustic.operators import (
     ForwardOperator, AdjointOperator, GradientOperator, BornOperator
 )
 
 
+@has_memoized_methods
 class AcousticWaveSolver:
     """
     Solver object that provides operators for seismic inversion problems

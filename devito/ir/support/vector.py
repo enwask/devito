@@ -3,7 +3,7 @@ from collections import OrderedDict
 from sympy import true
 
 from devito.symbolics import q_negative, q_positive
-from devito.tools import as_tuple, is_integer, memoized_meth
+from devito.tools import as_tuple, is_integer, has_memoized_methods, memoized_meth
 from devito.types import Dimension
 
 __all__ = ['Vector', 'LabeledVector', 'vmin', 'vmax']
@@ -263,6 +263,7 @@ class Vector(tuple):
         return self - other
 
 
+@has_memoized_methods
 class LabeledVector(Vector):
 
     """

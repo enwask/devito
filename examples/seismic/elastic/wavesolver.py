@@ -1,9 +1,10 @@
-from devito.tools import memoized_meth
+from devito.tools import has_memoized_methods, memoized_meth
 from devito import VectorTimeFunction, TensorTimeFunction
 
 from examples.seismic.elastic.operators import ForwardOperator
 
 
+@has_memoized_methods
 class ElasticWaveSolver:
     """
     Solver object that provides operators for seismic inversion problems

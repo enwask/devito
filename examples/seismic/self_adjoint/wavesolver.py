@@ -1,9 +1,10 @@
 from devito import Function, TimeFunction
-from devito.tools import memoized_meth
+from devito.tools import has_memoized_methods, memoized_meth
 from examples.seismic.self_adjoint.operators import IsoFwdOperator, IsoAdjOperator, \
     IsoJacobianFwdOperator, IsoJacobianAdjOperator
 
 
+@has_memoized_methods
 class SaIsoAcousticWaveSolver:
     """
     Solver object for a scalar isotropic variable density visco- acoustic

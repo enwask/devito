@@ -13,8 +13,8 @@ from sympy.core.decorators import call_highest_priority
 
 from devito.data import default_allocator
 from devito.parameters import configuration
-from devito.tools import (Pickable, as_tuple, dtype_to_ctype,
-                          frozendict, memoized_meth, sympy_mutex, CustomDtype)
+from devito.tools import (Pickable, as_tuple, dtype_to_ctype, frozendict,
+                          has_memoized_methods, memoized_meth, sympy_mutex, CustomDtype)
 from devito.types.args import ArgProvider
 from devito.types.caching import Cached, Uncached
 from devito.types.lazy import Evaluable
@@ -1742,6 +1742,7 @@ class BoundSymbol(AbstractSymbol):
         return self.function._C_ctype
 
 
+@has_memoized_methods
 class Indexed(sympy.Indexed):
 
     # The two type flags have changed in upstream sympy as of version 1.1,

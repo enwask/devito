@@ -624,6 +624,7 @@ class Relation:
         return S.ImaginaryUnit in self.distance
 
 
+@has_memoized_methods
 class Dependence(Relation):
 
     """
@@ -823,6 +824,7 @@ class DependenceGroup(set):
         return DependenceGroup(i for i in self if i.function is function)
 
 
+@has_memoized_methods
 class Scope:
 
     def __init__(self, exprs, rules=None):

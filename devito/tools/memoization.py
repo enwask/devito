@@ -1,57 +1,112 @@
+from collections import defaultdict
 from collections.abc import Hashable
-from functools import partial
+from functools import partial, wraps
 from itertools import tee
+from threading import RLock
+from typing import Any, Callable, TypeVar
 
-__all__ = ['memoized_meth', 'memoized_generator']
+__all__ = ['has_memoized_methods', 'memoized_meth', 'memoized_generator']
 
 
-class memoized_meth:
+ReturnType = TypeVar('ReturnType', contravariant=True)
+MethodType = TypeVar('MethodType', bound=Callable[..., ReturnType])
+
+
+def has_memoized_methods(cls: type) -> type:
     """
-    Decorator. Cache the return value of a class method.
-
-    Unlike ``memoized_func``, the return value of a given method invocation
-    will be cached on the instance whose method was invoked. All arguments
-    passed to a method decorated with memoize must be hashable.
-
-    If a memoized method is invoked directly on its class the result will not
-    be cached. Instead the method will be invoked like a static method: ::
-
-        class Obj:
-            @memoize
-            def add_to(self, arg):
-                return self + arg
-        Obj.add_to(1) # not enough arguments
-        Obj.add_to(1, 2) # returns 3, result is not cached
-
-    Adapted from: ::
-
-        code.activestate.com/recipes/577452-a-memoize-decorator-for-instance-methods/
+    Class decorator to provide instance-level caches for methods decorated with
+    `@memoized_meth`. If this initialization were done in the decorated methods,
+    we might introduce race conditions when multiple threads concurrently call a
+    method for the first time.
     """
+    # If the class has an __init_finalize__ method, we need to modify it instead in case
+    # it calls memoized methods during initialization (e.g. SubDimension)
+    if hasattr(cls, '__init_finalize__'):
+        # Don't modify the class if we've already applied this decorator
+        init = cls.__init_finalize__
+        if hasattr(init, '__has_memoized_methods'):
+            return cls
 
-    def __init__(self, func):
-        self.func = func
+        @wraps(init)
+        def _init_finalize(obj, *args, **kwargs) -> None:
+            # Apply our caches first
+            obj.__method_cache = {}
+            obj.__method_locks = defaultdict(RLock)
 
-    def __get__(self, obj, objtype=None):
-        if obj is None:
-            return self.func
-        return partial(self, obj)
+            # Call the original __init_finalize__ method
+            init(obj, *args, **kwargs)
 
-    def __call__(self, *args, **kw):
-        if not isinstance(args, Hashable):
-            # Uncacheable, a list, for instance.
-            # Better to not cache than blow up.
-            return self.func(*args)
-        obj = args[0]
+        # Set our flag to avoid re-initialization
+        _init_finalize.__has_memoized_methods = True
+
+        # Apply the replacement
+        cls.__init_finalize__ = _init_finalize
+        return cls
+
+    # Make sure we're not modifying a class that already has this decorator
+    new = cls.__new__
+    if hasattr(new, '__has_memoized_methods'):
+        return new
+
+    @wraps(new)
+    def _new(_cls, *args, **kwargs):
+        # Don't pass arguments to object constructor if there are no parent classes
+        if new is object.__new__:
+            obj = new(_cls)
+        else:
+            obj = new(_cls, *args, **kwargs)
+
+        # Initialize the method cache and locks
+        obj.__method_cache = {}
+        obj.__method_locks = defaultdict(RLock)
+
+        return obj
+
+    # Set our flag to avoid re-initialization
+    _new.__has_memoized_methods = True
+
+    # Apply the replacement
+    cls.__new__ = staticmethod(_new)
+    return cls
+
+
+def memoized_meth(meth: MethodType) -> MethodType:
+    """
+    Decorator for a thread-safe (concurrent read + write) cache of instance methods.
+
+    The class whose methods this decorator is applied to must itself be decorated with
+    `@has_memoized_methods`. If the class decorator is not present, a RuntimeError will
+    be raised upon invocation of the wrapped method.
+    """
+    @wraps(meth)
+    def _wrapped_meth(obj, *args: Hashable, **kwargs: Hashable) -> ReturnType:
         try:
-            cache = obj.__cache_meth
-        except AttributeError:
-            cache = obj.__cache_meth = {}
-        key = (self.func, args[1:], frozenset(kw.items()))
-        try:
-            res = cache[key]
-        except KeyError:
-            res = cache[key] = self.func(*args, **kw)
-        return res
+            cache: dict[int, ReturnType] = obj.__method_cache
+            locks: defaultdict[MethodType[Any], RLock] = obj.__method_locks
+
+            # Key for the method call with all arguments
+            _key = hash((meth, args, frozenset(kwargs.items())))
+
+            # Lock on the method
+            # TODO: Should we lock on arguments for more granularity?
+            with locks[meth]:
+                if _key not in cache:
+                    # If the result is not cached, call the method and cache the result
+                    result = meth(obj, *args, **kwargs)
+                    cache[_key] = result
+                else:
+                    # Otherwise retrieve the cached result
+                    result = cache[_key]
+            return result
+
+        except AttributeError as e:
+            # If the cache is missing, the class doesn't have the required decorator
+            cls = type(obj)
+            raise RuntimeError("Class '%s' must be decorated with "
+                               "@has_memoized_methods to use @memoized_meth"
+                               % cls.__name__) from e
+
+    return _wrapped_meth
 
 
 class memoized_generator:

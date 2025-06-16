@@ -13,7 +13,8 @@ from devito.finite_differences.differentiable import Mul
 from devito.finite_differences.elementary import floor
 from devito.logger import warning
 from devito.symbolics import retrieve_function_carriers, retrieve_functions, INT
-from devito.tools import as_tuple, flatten, filter_ordered, Pickable, memoized_meth
+from devito.tools import (as_tuple, flatten, filter_ordered, Pickable,
+                          has_memoized_methods, memoized_meth)
 from devito.types import (ConditionalDimension, Eq, Inc, Evaluable, Symbol,
                           CustomDimension, SubFunction)
 from devito.types.utils import DimensionTuple
@@ -177,6 +178,7 @@ class GenericInterpolator(ABC):
         return {}
 
 
+@has_memoized_methods
 class WeightedInterpolator(GenericInterpolator):
 
     """

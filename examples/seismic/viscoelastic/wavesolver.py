@@ -1,8 +1,9 @@
 from devito import VectorTimeFunction, TensorTimeFunction
-from devito.tools import memoized_meth
+from devito.tools import has_memoized_methods, memoized_meth
 from examples.seismic.viscoelastic.operators import ForwardOperator
 
 
+@has_memoized_methods
 class ViscoelasticWaveSolver:
     """
     Solver object that provides operators for seismic inversion problems

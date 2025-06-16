@@ -19,9 +19,9 @@ from devito.parameters import configuration
 from devito.symbolics import FieldFromPointer, normalize_args
 from devito.finite_differences import Differentiable, generate_fd_shortcuts
 from devito.finite_differences.tools import fd_weights_registry
-from devito.tools import (ReducerMap, as_tuple, c_restrict_void_p, flatten,
-                          is_integer, memoized_meth, dtype_to_ctype, humanbytes,
-                          mpi4py_mapper)
+from devito.tools import (ReducerMap, as_tuple, c_restrict_void_p, flatten, is_integer,
+                          has_memoized_methods, memoized_meth, dtype_to_ctype,
+                          humanbytes, mpi4py_mapper)
 from devito.types.dimension import Dimension
 from devito.types.args import ArgProvider
 from devito.types.caching import CacheManager
@@ -35,6 +35,7 @@ RegionMeta = namedtuple('RegionMeta', 'offset size')
 Offset = namedtuple('Offset', 'left right')
 
 
+@has_memoized_methods
 class DiscreteFunction(AbstractFunction, ArgProvider, Differentiable):
 
     """

@@ -1,12 +1,13 @@
 # coding: utf-8
 from devito import (Function, TimeFunction, warning, NODE,
                     DevitoCheckpoint, CheckpointOperator, Revolver)
-from devito.tools import memoized_meth
+from devito.tools import has_memoized_methods, memoized_meth
 from examples.seismic.tti.operators import ForwardOperator, AdjointOperator
 from examples.seismic.tti.operators import JacobianOperator, JacobianAdjOperator
 from examples.seismic.tti.operators import particle_velocity_fields
 
 
+@has_memoized_methods
 class AnisotropicWaveSolver:
     """
     Solver object that provides operators for seismic inversion problems
