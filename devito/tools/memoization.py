@@ -78,6 +78,9 @@ def memoized_meth(meth: MethodType) -> MethodType:
     `@has_memoized_methods`. If the class decorator is not present, a RuntimeError will
     be raised upon invocation of the wrapped method.
     """
+    # A global lock used to ensure per-method locks are created safely
+    _global_lock = RLock()
+
     @wraps(meth)
     def _wrapped_meth(obj, *args: Hashable, **kwargs: Hashable) -> ReturnType:
         try:
@@ -87,9 +90,14 @@ def memoized_meth(meth: MethodType) -> MethodType:
             # Key for the method call with all arguments
             _key = hash((meth, args, frozenset(kwargs.items())))
 
+            # Briefly use the global lock to safely access the per-method lock if it
+            # hasn't been initialized yet
+            with _global_lock:
+                lock = locks[meth]
+
             # Lock on the method
             # TODO: Should we lock on arguments for more granularity?
-            with locks[meth]:
+            with lock:
                 if _key not in cache:
                     # If the result is not cached, call the method and cache the result
                     result = meth(obj, *args, **kwargs)
