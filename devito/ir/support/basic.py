@@ -11,8 +11,8 @@ from devito.symbolics import (compare_ops, retrieve_indexed, retrieve_terminals,
                               q_constant, q_comp_acc, q_affine, q_routine, search,
                               uxreplace)
 from devito.tools import (Tag, as_mapper, as_tuple, is_integer, filter_sorted,
-                          flatten, memoized_meth, memoized_generator, smart_gt,
-                          smart_lt)
+                          flatten, has_memoized_methods, memoized_meth,
+                          memoized_generator, smart_gt, smart_lt)
 from devito.types import (ComponentAccess, Dimension, DimensionTuple, Fence,
                           CriticalRegion, Function, Symbol, Temp, TempArray,
                           TBArray)
