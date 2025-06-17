@@ -17,7 +17,6 @@ class Method(Generic[InstanceType, ReturnType], Protocol):
     """
     Protocol for an instance method
     """
-
     def __call__(self, obj: InstanceType,
                  *args: Hashable, **kwargs: Hashable) -> ReturnType:
         ...
@@ -172,9 +171,9 @@ class SafeTee(Iterator[ElementType]):
     A thread-safe version of `itertools.tee` that allows multiple iterators to safely
     share the same buffer.
 
-    This comes at a cost to performance of iterating elements that haven't yet been
-    generated, as `itertools.tee` is implemented in C (i.e. is fast) but we need to
-    buffer (and lock against that buffer) in Python instead.
+    In theory, this comes at a cost to performance of iterating elements that haven't
+    yet been generated, as `itertools.tee` is implemented in C (i.e. is fast) but we
+    need to buffer (and lock) in Python instead.
 
     However, the lock is not needed for elements that have already been buffered,
     allowing for concurrent iteration after the generator is initially consumed.
