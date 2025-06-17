@@ -1111,7 +1111,7 @@ class AmdDevice(Device):
             return fallback
 
 
-@memoized_func
+@cache
 def node_max_mem_trans_nbytes(platform):
     """
     Return the maximum memory transaction size in bytes for the underlying
