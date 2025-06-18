@@ -76,16 +76,17 @@ class SerialExecutor(GenericExecutor):
         return (fn(*args) for args in zip(*iterables))
 
 
-def get_executor(allow_parallel: bool = True) -> GenericExecutor:
+def get_executor(threading: bool | None = None) -> GenericExecutor:
     """
-    Returns a new executor for mapping tasks. With free threading, this is an instance of
-    `ThreadPoolExecutor`; otherwise, it's an executor that runs tasks in serial (which
-    is equivalent to e.g. the built-in `map` function).
+    Returns a new executor for mapping tasks. If a value is provided for `threading`,
+    it will be used to decide between a `ThreadPoolExecutor` and a `SerialExecutor`.
+
+    If no value is provided, a `ThreadPoolExecutor` is returned iff free threading is
+    available (i.e., the GIL is disabled).
 
     The resulting executor should be used as a context manager.
     """
-
-    if allow_parallel and is_free_threading():
+    if threading or is_free_threading():
         return ThreadPoolExecutor()
-    else:
-        return SerialExecutor()
+
+    return SerialExecutor()
