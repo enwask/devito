@@ -1,11 +1,15 @@
 from concurrent.futures import ThreadPoolExecutor
 import random
+
+import pytest
 from devito import Operator, TimeFunction, Grid, Eq
 from devito.logger import info
 import numpy as np
 from threading import Barrier, current_thread
 
 from devito.tools import has_memoized_methods, memoized_meth
+from devito.tools.threading.executor import get_executor
+from devito.tools.threading.queue import RecursionQueue, RecursionRoutine, parallel_recursive
 
 
 def test_concurrent_executing_operators():
@@ -96,3 +100,69 @@ def test_memoized_meth_safety():
         assert len(results) == num_unique_args, ("increment() should return a number of "
                                                  "unique values equal to unique args")
 
+
+class Node:
+    """
+    A simple node class for testing the `RecursionQueue`.
+    """
+    def __init__(self, value, *children: 'Node'):
+        self.value = value
+        self.children = list(children)
+
+    def add_child(self, child):
+        self.children.append(child)
+
+
+def make_random_tree(seed: int | None = None,
+                     depth: int = 8, branching_factor: int = 4) -> tuple[Node, int]:
+    """
+    Creates a random tree structure for testing, returning the root and sum of values.
+    """
+    if seed is not None:
+        random.seed(seed)
+
+    if depth == 0:
+        value = random.randint(1, 100)
+        return Node(value), value
+
+    root = Node(random.randint(1, 100))
+    total = root.value
+    for _ in range(random.randint(1, branching_factor)):
+        child, value = make_random_tree(None, depth - 1, branching_factor)
+        root.add_child(child)
+        total += value
+
+    return root, total
+
+
+class TestRecursionQueue:
+    """
+    Tests functionality of the `RecursionQueue` class and `parallel_recursive` decorator.
+    """
+
+    def test_multiple_application(self):
+        """
+        Tests reapplication of the same `RecursionQueue` in one context.
+        """
+
+        @parallel_recursive
+        def sum_values(queue: RecursionQueue[Node, int], node: Node) -> RecursionRoutine[Node, int]:
+            """
+            Recursively sums the values of nodes in a tree using `RecursionQueue`.
+            """
+            child_sums = yield queue.request(node.children)
+            return node.value + sum(child_sums)
+
+        # Create a random tree
+        root, total = make_random_tree(seed=42)
+        with sum_values(get_executor(max_workers=16, force_threaded=True)) as queue:
+            result1 = queue.apply(root)
+            result2 = queue.apply(root)
+
+        # Check that both results are correct
+        assert result1 == total, f"Expected {total}, got {result1}"
+        assert result2 == total, f"Expected {total}, got {result2}"
+
+        # Check that the executor was shut down
+        with pytest.raises(RuntimeError):
+            queue._executor.submit(lambda: None)
