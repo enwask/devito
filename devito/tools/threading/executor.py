@@ -41,6 +41,13 @@ class GenericExecutor(Executor):
     Exists to provide typing for `Executor.map`.
     """
 
+    @property
+    def max_workers(self) -> int:
+        """
+        Returns the maximum number of workers that can be used by this executor.
+        """
+        ...
+
     def submit(self, fn: Callable[..., ResultType],
                /, *args, **kwargs) -> Future[ResultType]:
         return super().submit(fn, *args, **kwargs)
@@ -76,17 +83,34 @@ class SerialExecutor(GenericExecutor):
         return (fn(*args) for args in zip(*iterables))
 
 
-def get_executor(threading: bool | None = None) -> GenericExecutor:
+class ThreadedExecutor(GenericExecutor, ThreadPoolExecutor):
     """
-    Returns a new executor for mapping tasks. If a value is provided for `threading`,
-    it will be used to decide between a `ThreadPoolExecutor` and a `SerialExecutor`.
+    A threaded executor that runs tasks in a thread pool, with the same interface as
+    `ThreadPoolExecutor`. This is used when free threading is available.
 
-    If no value is provided, a `ThreadPoolExecutor` is returned iff free threading is
-    available (i.e., the GIL is disabled).
+    Exposes the value for `max_workers`.
+    """
+
+    def __init__(self, max_workers: int = None):
+        super().__init__(max_workers=max_workers)
+        self.max_workers = self._max_workers  # Expose the computed max_workers value
+
+
+def get_executor(max_workers: int = None,
+                 force_threaded: bool = False) -> GenericExecutor:
+    """
+    Returns a new executor for mapping tasks. If `force_threaded` is `True`, a
+    `ThreadedExecutor` is returned regardless of whether free threading is available.
+
+    Otherwise, if `max_workers` is equal to 0, a `SerialExecutor` is returned.
+
+    If neither of the above conditions is met, a `ThreadedExecutor` is returned iff
+    free threading is available (i.e., the GIL is disabled), using the specified value
+    for `max_workers`.
 
     The resulting executor should be used as a context manager.
     """
-    if threading or is_free_threading():
-        return ThreadPoolExecutor()
+    if force_threaded or (max_workers and is_free_threading()):
+        return ThreadedExecutor(max_workers=max_workers)
 
     return SerialExecutor()
