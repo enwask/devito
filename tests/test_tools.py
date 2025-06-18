@@ -6,6 +6,7 @@ import time
 
 from devito.tools import (UnboundedMultiTuple, ctypes_to_cstr, toposort,
                           filter_ordered, transitive_closure, UnboundTuple)
+from devito.tools.memoization import has_memoized_methods
 from devito.types.basic import Symbol
 
 
@@ -145,3 +146,69 @@ def test_unbound_tuple():
     assert ub.next() == 2
     ub.iter()
     assert ub.next() == 1
+
+
+class TestMemoizedMethods:
+    """
+    Tests tools for memoization of instance methods and generators, including
+    concurrent invocations and iteration.
+    """
+
+    @has_memoized_methods
+    class Base:
+        """
+        Base class for testing memoized instance methods
+        """
+
+        with_init_finalize = False
+
+        def __new__(cls, *args, **kwargs):
+            obj = super().__new__(cls)
+            return obj
+
+        def __init__(self, *args, **kwargs):
+            self.did_init = True
+
+    class BaseWithFinalize(Base):
+        """
+        Base class for testing memoized instance methods on a class with Devito's
+        __init_finalize__ pattern
+        """
+
+        with_init_finalize = True
+
+        def __new__(cls, *args, **kwargs):
+            obj = super().__new__(cls, *args, **kwargs)
+            obj.__init_finalize__(*args, **kwargs)
+            return obj
+
+        def __init_finalize__(self, *args, **kwargs):
+            self.did_init_finalize = True
+
+    @pytest.mark.parametrize('cls', [Base, BaseWithFinalize])
+    def test_has_memoized_methods_idempotency(self, cls: type[Base]):
+        """
+        Tests that applying the `@has_memoized_methods` decorator multiple times
+        in an inheritance chain does not lead to multiple initializations
+        """
+
+        @has_memoized_methods
+        @has_memoized_methods
+        class Test(cls):
+            def __init__(self, *args, **kwargs) -> None:
+                assert not hasattr(self, 'did_init')
+                super().__init__(*args, **kwargs)
+
+            def __init_finalize__(self, *args, **kwargs) -> None:
+                # Only called when the base has __init_finalize__
+                assert not hasattr(self, 'did_init_finalize')
+                super().__init_finalize__(*args, **kwargs)
+
+        # Create an instance to trigger initialization
+        instance = Test()
+
+        # Check that the instance has been initialized correctly
+        assert instance.did_init
+        if cls.with_init_finalize:
+            assert instance.did_init_finalize
+
