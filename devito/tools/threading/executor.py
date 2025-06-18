@@ -1,35 +1,9 @@
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
+from functools import cache
 from typing import Callable, Iterable, TypeVar
 import sys
-import threading
 
-from functools import cache
-
-__all__ = ['sympy_mutex', 'safe_dict_copy', 'is_free_threading',
-           'get_executor', 'GenericExecutor', 'SerialExecutor']
-
-
-sympy_mutex = threading.RLock()
-
-
-def safe_dict_copy(v):
-    """
-    Thread-safe copy of a dict.
-
-    Being implemented as a retry loop around the copy(), this function is
-    indicated for situations in which concurrent dict updates are unlikely,
-    otherwise it might eventually cause performance degradations (in which
-    case, lock-based solutions would be preferable).
-
-    Notes
-    -----
-    See https://bugs.python.org/issue40327
-    """
-    while True:
-        try:
-            return v.copy()
-        except RuntimeError:
-            pass
+__all__ = ['is_free_threading', 'GenericExecutor', 'SerialExecutor', 'get_executor']
 
 
 def _is_gil_enabled() -> bool:
@@ -102,7 +76,7 @@ class SerialExecutor(GenericExecutor):
         return (fn(*args) for args in zip(*iterables))
 
 
-def get_executor() -> GenericExecutor:
+def get_executor(allow_parallel: bool = True) -> GenericExecutor:
     """
     Returns a new executor for mapping tasks. With free threading, this is an instance of
     `ThreadPoolExecutor`; otherwise, it's an executor that runs tasks in serial (which
@@ -111,7 +85,7 @@ def get_executor() -> GenericExecutor:
     The resulting executor should be used as a context manager.
     """
 
-    if is_free_threading():
+    if allow_parallel and is_free_threading():
         return ThreadPoolExecutor()
     else:
         return SerialExecutor()
