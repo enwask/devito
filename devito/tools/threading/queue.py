@@ -15,13 +15,17 @@ ResultType = TypeVar('ResultType', covariant=True)
 NodeType = TypeVar('NodeType', covariant=True)
 
 
-class Request(Generic[NodeType], namedtuple):
+class Request(Generic[NodeType]):
     """
     Describes a request for nodes to be processed in the recursion queue.
     """
-    nodes: tuple[NodeType]
-    args: tuple
-    kwargs: dict
+    def __init__(self, nodes: Iterable[NodeType], args: tuple = (), kwargs: dict = None):
+        """
+        Initializes the request with nodes, arguments, and keyword arguments.
+        """
+        self.nodes = as_tuple(nodes)
+        self.args = args
+        self.kwargs = kwargs if kwargs is not None else {}
 
 
 # Describes a Process coroutine that yields tasks for children
@@ -32,9 +36,10 @@ class Task(Generic[NodeType, ResultType]):
     """
     Describes a task in the actual task queue or awaiting results from children.
     """
-    def __init__(self, parent_id: UUID | None,
+    def __init__(self, parent_id: UUID | None, index: int,
                  coroutine: RecursionRoutine[NodeType, ResultType]) -> None:
         self.parent_id = parent_id  # The ID of the parent task, if any
+        self.index: int = index  # The index of the task in the parent's results
         self.coroutine = coroutine  # The process coroutine
         self.map_result: list[ResultType] | None = None  # The pending child results
         self.num_waiting: int = 0  # Number of child results we're still waiting for
@@ -42,10 +47,17 @@ class Task(Generic[NodeType, ResultType]):
     def set_waiting(self, num_children: int) -> None:
         """
         Signals that we're waiting for a number of child results; the task will then
-        be put in the pending results request until all results are ready.
+        be put in the pending results map until all results are ready.
         """
         self.num_waiting = num_children
         self.map_result = [None] * num_children
+
+    def set_results(self, results: list[ResultType]) -> None:
+        """
+        Sets results for the task immediately, bypassing the waiting mechanism.
+        """
+        self.map_result = results
+        self.num_waiting = 0
 
     def clear_results(self) -> None:
         """
@@ -58,7 +70,7 @@ class Task(Generic[NodeType, ResultType]):
         """
         Puts a result in the pending results and returns True if all results are ready.
         """
-        self.results[index] = result
+        self.map_result[index] = result
         self.num_waiting -= 1
         return self.num_waiting == 0
 
@@ -138,14 +150,14 @@ class RecursionQueue(Generic[NodeType, ResultType]):
         if isinstance(root, Iterable):
             # For multiple roots, we need a meta-task
             def _process_multiple_roots(queue) -> RecursionRoutine[NodeType, ResultType]:
-                results = yield queue.request(root, *args, **kwargs)
+                results = yield queue.request(as_tuple(root), *args, **kwargs)
                 return results
             root_coro = _process_multiple_roots(self)
         else:
             root_coro = self._process(self, root, *args, **kwargs)
 
         # Create the root task and schedule it
-        root_task = Task(parent_id=None, coroutine=root_coro)
+        root_task = Task(parent_id=None, index=-1, coroutine=root_coro)
         self._schedule(root_task)
 
         # Wait for the final result and return it
@@ -168,9 +180,6 @@ class RecursionQueue(Generic[NodeType, ResultType]):
         Cleans up the recursion queue after use in a context manager.
         """
         if self._executor is not None:
-            # Wait for all tasks to complete
-            self._task_queue.join()
-
             # Stop the worker threads by sending None tasks
             for _ in range(self._executor.max_workers):
                 self._task_queue.put(None)
@@ -219,7 +228,7 @@ class RecursionQueue(Generic[NodeType, ResultType]):
 
             # If the request is empty, immediately resume (fast path)
             if len(request.nodes) == 0:
-                task.clear_results()
+                task.set_results([])
                 self._schedule(task)
                 return
 
@@ -232,11 +241,11 @@ class RecursionQueue(Generic[NodeType, ResultType]):
             # Schedule children for execution
             for i, node in enumerate(request.nodes):
                 child_coro = self._process(self, node, *request.args, **request.kwargs)
-                child_task = Task(parent_id=task_id, coroutine=child_coro)
+                child_task = Task(parent_id=task_id, index=i, coroutine=child_coro)
 
                 # Enqueue all but the last child task
                 if i < len(request.nodes) - 1:
-                    self._task_queue.put_result(child_task)
+                    self._task_queue.put(child_task)
                     continue
 
                 # Fast-path the last child task
