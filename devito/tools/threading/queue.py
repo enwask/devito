@@ -42,7 +42,7 @@ class Task(Generic[NodeType, ResultType]):
     def set_waiting(self, num_children: int) -> None:
         """
         Signals that we're waiting for a number of child results; the task will then
-        be put in the pending results map until all results are ready.
+        be put in the pending results request until all results are ready.
         """
         self.num_waiting = num_children
         self.map_result = [None] * num_children
@@ -64,7 +64,7 @@ class Task(Generic[NodeType, ResultType]):
 
     def spin(self) -> Request[NodeType]:
         """
-        Spins the task, sending the current map result if there is one and waiting for
+        Spins the task, sending the current request result if there is one and waiting for
         the process function to yield a new request.
         """
         return self.coroutine.send(self.map_result)
@@ -107,7 +107,7 @@ class RecursionQueue(Generic[NodeType, ResultType]):
             self._root_result: ResultType | None = None
             self._root_result_event = Event()
 
-    def map(self, nodes: NodeType | Iterable[NodeType], *args, **kwargs) \
+    def request(self, nodes: NodeType | Iterable[NodeType], *args, **kwargs) \
             -> Request[NodeType]:
         """
         When yielded from a process function, requests the recursion queue to compute
@@ -138,7 +138,7 @@ class RecursionQueue(Generic[NodeType, ResultType]):
         if isinstance(root, Iterable):
             # For multiple roots, we need a meta-task
             def _process_multiple_roots(queue) -> RecursionRoutine[NodeType, ResultType]:
-                results = yield queue.map(root, *args, **kwargs)
+                results = yield queue.request(root, *args, **kwargs)
                 return results
             root_coro = _process_multiple_roots(self)
         else:
@@ -275,7 +275,7 @@ def parallel_recursive(process: Process[NodeType, ResultType]) \
 
     The decorated function should be a coroutine that takes a `RecursionQueue` as its
     first argument, followed by the node to process and any additional arguments. It
-    should yield `queue.map(...)` to request results for child nodes.
+    should yield `queue.request(...)` to request results for child nodes.
 
     The returned function should be used as a context manager, which will manage the
     lifecycle of the recursion queue and its executor.
