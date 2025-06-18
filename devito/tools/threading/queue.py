@@ -88,7 +88,6 @@ class Process(Protocol[NodeType, ResultType]):
     """
     def __call__(self, queue: 'RecursionQueue[NodeType, ResultType]', node: NodeType,
                  *args, **kwargs) -> RecursionRoutine[NodeType, ResultType]:
-        # child_results = yield queue.map(node.children, *args, **kwargs)
         ...
 
 
@@ -128,7 +127,8 @@ class RecursionQueue(Generic[NodeType, ResultType]):
         """
         return Request(as_tuple(nodes), args, kwargs)
 
-    def apply(self, root: NodeType | Iterable[NodeType], *args, **kwargs) -> ResultType:
+    def apply(self, root: NodeType | Iterable[NodeType], *args, **kwargs) \
+            -> ResultType | list[ResultType]:
         """
         Starts the processing of the root node(s) and returns the result.
         If the executor is None, operates in serial and bypasses the queue machinery.
@@ -218,7 +218,6 @@ class RecursionQueue(Generic[NodeType, ResultType]):
 
             # Mark the task as done
             self._schedule(task)
-            self._task_queue.task_done()
 
     def _schedule(self, task: Task[NodeType, ResultType]) -> None:
         try:

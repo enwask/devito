@@ -3,7 +3,8 @@ from functools import cache
 from typing import Callable, Iterable, TypeVar
 import sys
 
-__all__ = ['is_free_threading', 'GenericExecutor', 'SerialExecutor', 'get_executor']
+__all__ = ['is_free_threading', 'GenericExecutor', 'SerialExecutor', 'ThreadedExecutor',
+           'get_executor']
 
 
 def _is_gil_enabled() -> bool:
@@ -66,6 +67,10 @@ class SerialExecutor(GenericExecutor):
     `ThreadPoolExecutor` or `ProcessPoolExecutor`, including timeouts etc.
     """
 
+    @property
+    def max_workers(self) -> int:
+        return 0
+
     def submit(self, fn, /, *args, **kwargs):
         """
         Runs the function immediately in the current thread and returns a Future.
@@ -93,7 +98,10 @@ class ThreadedExecutor(GenericExecutor, ThreadPoolExecutor):
 
     def __init__(self, max_workers: int = None):
         super().__init__(max_workers=max_workers)
-        self.max_workers = self._max_workers  # Expose the computed max_workers value
+
+    @property
+    def max_workers(self) -> int:
+        return self._max_workers
 
 
 def get_executor(max_workers: int = None,
