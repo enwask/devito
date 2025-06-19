@@ -1141,7 +1141,7 @@ class FindWithin(FindNodes):
 
     def _post_visit(self, ret: Iterator[Node]) -> list[Node]:
         ret = super()._post_visit(ret)
-        if ret[-1] is self.STOP:
+        if ret and ret[-1] is self.STOP:
             ret.pop()
         return ret
 
@@ -1151,13 +1151,15 @@ class FindWithin(FindNodes):
 
         if flag and self.rule(self.match, o):
             yield o
-        for i in o.children:
-            for r in self._visit(i, flag=flag):
-                yield r
-                if r is self.STOP:
+        for child in o.children:
+            for i in self._visit(child, flag=flag):
+                if flag and i is self.STOP:
+                    yield self.STOP
                     return
 
-        if o is self.stop:
+                yield i
+
+        if flag and o is self.stop:
             yield self.STOP
 
 
