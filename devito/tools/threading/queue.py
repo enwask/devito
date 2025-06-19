@@ -5,7 +5,8 @@ from threading import Event, RLock
 from typing import Callable, Generic, Protocol, TypeVar
 from uuid import UUID, uuid4
 
-from devito.tools import as_tuple, GenericExecutor
+from devito.tools import as_tuple
+from devito.tools.threading.executor import GenericExecutor
 
 __all__ = ['NodeType', 'ResultType', 'RecursionRoutine', 'RecursionQueue',
            'parallel_recursive']
