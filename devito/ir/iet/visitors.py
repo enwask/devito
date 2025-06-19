@@ -1131,36 +1131,63 @@ class FindWithin(FindNodes):
     collecting matching nodes after `stop` is found.
     """
 
-    # Dummy object to signal the end of the search
-    STOP = object()
+    # Sentinel values to signal the start/end of a matching window
+    SET_FLAG = object()
+    UNSET_FLAG = object()
 
     def __init__(self, match: type, start: Node, stop: Node | None = None) -> None:
         super().__init__(match)
         self.start = start
         self.stop = stop
 
-    def _post_visit(self, ret: Iterator[Node]) -> list[Node]:
-        ret = super()._post_visit(ret)
-        if ret and ret[-1] is self.STOP:
-            ret.pop()
-        return ret
+    def _post_visit(self, ret: Iterator[Node | object]) -> list[Node]:
+        return super()._post_visit(i for i in ret
+                                   if i not in (self.SET_FLAG, self.UNSET_FLAG))
 
-    def visit_Node(self, o: Node, flag: bool = False) -> Iterator[Node]:
-        if o is self.start:
-            flag = True
+    def visit_object(self, o: object, flag: bool = False) -> Iterator[Node | object]:
+        yield self.SET_FLAG if flag else self.UNSET_FLAG
+
+    def visit_tuple(self, o: Sequence[Any], flag: bool = False) -> Iterator[Node | object]:
+        for el in o:
+            for i in self._visit(el, flag=flag):
+                # New flag state is yielded at the end of child results
+                if i is self.SET_FLAG:
+                    flag = True
+                    continue
+                if i is self.UNSET_FLAG:
+                    flag = False
+                    continue
+
+                # Regular object
+                yield i
+
+        yield self.SET_FLAG if flag else self.UNSET_FLAG
+
+    visit_list = visit_tuple
+
+    def visit_Node(self, o: Node, flag: bool = False) -> Iterator[Node | object]:
+        flag = flag or (o is self.start)
 
         if flag and self.rule(self.match, o):
             yield o
+
         for child in o.children:
             for i in self._visit(child, flag=flag):
-                if flag and i is self.STOP:
-                    yield self.STOP
-                    return
+                # New flag state is yielded at the end of child results
+                if i is self.SET_FLAG:
+                    flag = True
+                    continue
+                if i is self.UNSET_FLAG:
+                    if flag:
+                        yield self.UNSET_FLAG
+                        return
+                    continue
 
+                # Regular object
                 yield i
 
-        if flag and o is self.stop:
-            yield self.STOP
+        flag &= (o is not self.stop)
+        yield self.SET_FLAG if flag else self.UNSET_FLAG
 
 
 ApplicationType = TypeVar('ApplicationType')
