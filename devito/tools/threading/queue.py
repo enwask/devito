@@ -242,13 +242,7 @@ class RecursionQueue(Generic[NodeType, ResultType]):
                 child_coro = self._process(self, node, *request.args, **request.kwargs)
                 child_task = Task(parent_id=task_id, index=i, coroutine=child_coro)
 
-                # Enqueue all but the last child task
-                if i < len(request.nodes) - 1:
-                    self._task_queue.put(child_task)
-                    continue
-
-                # Fast-path the last child task
-                self._schedule(child_task)
+                self._task_queue.put(child_task)
 
         except StopIteration as e:
             # The coroutine is done and has a result ready
