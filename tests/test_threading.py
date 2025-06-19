@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 import random
+import time
 
 import pytest
 from devito import Operator, TimeFunction, Grid, Eq
@@ -150,7 +151,7 @@ class TestRecursionQueue:
             """
             Recursively sums the values of nodes in a tree using `RecursionQueue`.
             """
-            child_sums = yield queue.request(node.children)
+            child_sums = yield queue.recurse(node.children)
             return node.value + sum(child_sums)
 
         # Create a random tree
@@ -166,3 +167,29 @@ class TestRecursionQueue:
         # Check that the executor was shut down
         with pytest.raises(RuntimeError):
             queue._executor.submit(lambda: None)
+
+    @pytest.mark.parametrize("depth", [2, 3, 4])
+    def test_call_time(self, depth: int):
+        """
+        Tests that parallelized recursive calls take the expected amount of time.
+        """
+
+        @parallel_recursive
+        def go(queue: RecursionQueue[int, None], depth: int) -> RecursionRoutine[int, None]:
+            time.sleep(0.2)  # Simulate some work
+            if depth > 1:
+                yield queue.recurse([depth - 1] * 2)
+
+        # Spawn exactly enough threads for all workers to run concurrently
+        num_threads = 2 ** depth + 1
+        expected = 0.2 * depth
+
+        with go(get_executor(max_workers=num_threads, force_threaded=True)) as queue:
+            start_time = time.perf_counter()
+            queue.apply(depth)
+            elapsed = time.perf_counter() - start_time
+
+        assert abs(elapsed - expected) < 0.2, \
+            f"Expected ~{expected:.2f}s, got {elapsed:.2f}s"
+        # # Should have taken roughly 1.5 seconds if we utilized threads correctly
+        # assert 1.0 < elapsed < 2.0, f"Expected ~1.5s, got {elapsed:.2f} seconds"
