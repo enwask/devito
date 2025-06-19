@@ -1147,7 +1147,8 @@ class FindWithin(FindNodes):
     def visit_object(self, o: object, flag: bool = False) -> Iterator[Node | object]:
         yield self.SET_FLAG if flag else self.UNSET_FLAG
 
-    def visit_tuple(self, o: Sequence[Any], flag: bool = False) -> Iterator[Node | object]:
+    def visit_tuple(self, o: Sequence[Any],
+                    flag: bool = False) -> Iterator[Node | object]:
         for el in o:
             for i in self._visit(el, flag=flag):
                 # New flag state is yielded at the end of child results
