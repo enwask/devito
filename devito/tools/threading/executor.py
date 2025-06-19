@@ -109,6 +109,8 @@ def get_executor(max_workers: int = None,
     """
     Returns a new executor for mapping tasks. If `force_threaded` is `True`, a
     `ThreadedExecutor` is returned regardless of whether free threading is available.
+    The `ThreadedExecutor` will use the specified value for `max_workers`, or default
+    to the number of available CPUs.
 
     Otherwise, if `max_workers` is equal to 0, a `SerialExecutor` is returned.
 

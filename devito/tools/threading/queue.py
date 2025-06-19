@@ -20,9 +20,6 @@ class Request(Generic[NodeType]):
     Describes a request for nodes to be processed in the recursion queue.
     """
     def __init__(self, nodes: Iterable[NodeType], args: tuple = (), kwargs: dict = None):
-        """
-        Initializes the request with nodes, arguments, and keyword arguments.
-        """
         self.nodes = as_tuple(nodes)
         self.args = args
         self.kwargs = kwargs if kwargs is not None else {}
@@ -51,13 +48,6 @@ class Task(Generic[NodeType, ResultType]):
         """
         self.num_waiting = num_children
         self.map_result = [None] * num_children
-
-    def set_results(self, results: list[ResultType]) -> None:
-        """
-        Sets results for the task immediately, bypassing the waiting mechanism.
-        """
-        self.map_result = results
-        self.num_waiting = 0
 
     def clear_results(self) -> None:
         """
@@ -118,7 +108,7 @@ class RecursionQueue(Generic[NodeType, ResultType]):
             self._root_result: ResultType | None = None
             self._root_result_event = Event()
 
-    def request(self, nodes: NodeType | Iterable[NodeType], *args, **kwargs) \
+    def recurse(self, nodes: NodeType | Iterable[NodeType], *args, **kwargs) \
             -> Request[NodeType]:
         """
         When yielded from a process function, requests the recursion queue to compute
@@ -142,7 +132,7 @@ class RecursionQueue(Generic[NodeType, ResultType]):
             return self._apply_serial(root, *args, **kwargs)
 
         # If an executor is provided, run the process in parallel
-        # self._task_queue.shu
+        # FIXME: Need to propagate exceptions from worker threads!
         self._pending_results.clear()
         self._root_result = None
         self._root_result_event.clear()
@@ -223,11 +213,12 @@ class RecursionQueue(Generic[NodeType, ResultType]):
         try:
             # Send the result of child tasks if available
             request = task.spin()
-            assert request is not None
+            if request is None:
+                raise RuntimeError("Task coroutine did not yield a recursion request")
 
             # If the request is empty, immediately resume (fast path)
             if len(request.nodes) == 0:
-                task.set_results([])
+                task.set_waiting(0)
                 self._schedule(task)
                 return
 
