@@ -120,7 +120,7 @@ def get_executor(max_workers: int = None,
 
     The resulting executor should be used as a context manager.
     """
-    if force_threaded or (max_workers and is_free_threading()):
+    if force_threaded or (max_workers != 0 and is_free_threading()):
         return ThreadedExecutor(max_workers=max_workers)
 
     return SerialExecutor()
