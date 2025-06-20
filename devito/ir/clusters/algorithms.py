@@ -12,7 +12,8 @@ from devito.ir.support import (Any, Backward, Forward, IterationSpace, erange,
 from devito.ir.equations import OpMin, OpMax, identity_mapper
 from devito.ir.clusters.analysis import analyze
 from devito.ir.clusters.cluster import Cluster, ClusterGroup
-from devito.ir.clusters.visitors import ClusterVisitor, StatefulClusterVisitor, cluster_pass
+from devito.ir.clusters.visitors import (ClusterVisitor, StatefulClusterVisitor,
+                                         cluster_pass)
 from devito.mpi.halo_scheme import HaloScheme, HaloTouch
 from devito.mpi.reduction_scheme import DistReduce
 from devito.symbolics import (limits_mapper, retrieve_indexed, uxreplace,

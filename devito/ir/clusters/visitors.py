@@ -1,5 +1,5 @@
 from collections import defaultdict
-from collections.abc import Generator, Iterable
+from collections.abc import Iterable
 from enum import Enum
 from itertools import groupby
 from threading import Event, RLock
@@ -7,8 +7,6 @@ from types import TracebackType
 from queue import Queue as TaskQueue
 from typing import Generic, TypeVar, override
 from uuid import UUID, uuid4
-
-from sympy import N
 
 from devito.ir.clusters.cluster import Cluster, ClusterGroup
 from devito.ir.support import IterationSpace, Scope, null_ispace
@@ -302,24 +300,25 @@ class TaskResults(Generic[ClusterType]):
         return flatten(self.results)
 
 
-class ParallelQueue(ClusterVisitor, Generic[ClusterType]):
+class ParallelClusterVisitor(ClusterVisitor, Generic[ClusterType]):
 
     """
-    A `Queue` that can be used in parallel.
+    A `ClusterVisitor` that can be used in parallel.
 
-    Exposes the same interface as `Queue`, but can be spun up with a `GenericExecutor`
-    for parallel execution. The queue should then be used in a context manager and will
-    manage the lifecycle of its attached executor.
+    Exposes the same interface as `ClusterVisitor`, but can be spun up with a
+    `GenericExecutor` for parallel execution. The queue should then be used
+    in a context manager and will manage the lifecycle of its attached
+    executor.
 
     .. code-block:: python
 
-        queue = SomeQueue(...)
-        with queue.start_threaded(executor):
-            queue.process(clusters)
+        visitor = SomeVisitor(...)
+        with visitor.start_threaded(executor):
+            visitor.process(clusters)
 
         # or...
-        with SomeQueue(...).start_threaded(executor) as queue:
-            queue.process(clusters)
+        with SomeVisitor(...).start_threaded(executor) as visitor:
+            visitor.process(clusters)
     """
 
     class Mode(str, Enum):
@@ -347,9 +346,9 @@ class ParallelQueue(ClusterVisitor, Generic[ClusterType]):
         self._root_task_event = Event()
 
         # Current processing mode, triggered by a call to one of the process methods
-        self._mode = ParallelQueue.Mode.NONE
+        self._mode = ParallelClusterVisitor.Mode.NONE
 
-    def start_threaded(self, executor: GenericExecutor) -> 'ParallelQueue':
+    def start_threaded(self, executor: GenericExecutor) -> 'ParallelClusterVisitor':
         """
         Starts the queue in a threaded context, using the provided `executor`.
         """
@@ -360,7 +359,7 @@ class ParallelQueue(ClusterVisitor, Generic[ClusterType]):
 
         return self
 
-    def __enter__(self) -> 'ParallelQueue':
+    def __enter__(self) -> 'ParallelClusterVisitor':
         """
         Enters the threaded context, spinning up a number of worker threads equal to
         the executor's `max_workers`.
@@ -393,11 +392,12 @@ class ParallelQueue(ClusterVisitor, Generic[ClusterType]):
 
     @override
     def _process_fatd(self, clusters: list[ClusterType], level: int,
-                      prefix: IterationSpace | None = None, **kwargs) -> list[ClusterType]:
+                      prefix: IterationSpace | None = None,
+                      **kwargs) -> list[ClusterType]:
         """
         Processes a list of clusters in parallel with an apply-then-divide strategy.
         """
-        self._mode = ParallelQueue.Mode.APPLY_THEN_DIVIDE
+        self._mode = ParallelClusterVisitor.Mode.APPLY_THEN_DIVIDE
         return self._process(clusters, level, prefix, **kwargs)
 
     @override
@@ -407,11 +407,11 @@ class ParallelQueue(ClusterVisitor, Generic[ClusterType]):
         """
         Processes a list of clusters in parallel with a divide-then-apply strategy.
         """
-        self._mode = ParallelQueue.Mode.DIVIDE_THEN_APPLY
+        self._mode = ParallelClusterVisitor.Mode.DIVIDE_THEN_APPLY
         return self._process(clusters, level, prefix, **kwargs)
 
     def _process(self, clusters: list[ClusterType], level: int,
-                      prefix: IterationSpace | None, **kwargs) -> list[ClusterType]:
+                 prefix: IterationSpace | None, **kwargs) -> list[ClusterType]:
         """
         Processes a list of clusters in parallel with the currently set processing mode.
         """
@@ -434,7 +434,7 @@ class ParallelQueue(ClusterVisitor, Generic[ClusterType]):
         self._root_task_event.wait()
 
         # Unset processing mode and return the root result
-        self._mode = ParallelQueue.Mode.NONE
+        self._mode = ParallelClusterVisitor.Mode.NONE
         return self._root_task_result
 
     def _divide(self, task_id: TaskId | None, task: Task[ClusterType]) \
@@ -472,7 +472,7 @@ class ParallelQueue(ClusterVisitor, Generic[ClusterType]):
         """
         if task.is_continuation:
             # The task is a continuation (i.e. we already did the divide step)
-            if self._mode == ParallelQueue.Mode.DIVIDE_THEN_APPLY:
+            if self._mode == ParallelClusterVisitor.Mode.DIVIDE_THEN_APPLY:
                 # In FDTA, apply the callback after the divide step
                 task.clusters = self.callback(*task.args(), **task.kwargs)
 
@@ -498,7 +498,7 @@ class ParallelQueue(ClusterVisitor, Generic[ClusterType]):
             return
 
         # The task is not a continuation
-        if self._mode == ParallelQueue.Mode.APPLY_THEN_DIVIDE:
+        if self._mode == ParallelClusterVisitor.Mode.APPLY_THEN_DIVIDE:
             # In FATD, apply the callback before the divide step
             task.clusters = self.callback(*task.args(), **task.kwargs)
 
@@ -517,7 +517,6 @@ class ParallelQueue(ClusterVisitor, Generic[ClusterType]):
             self._tasks_waiting[task_id] = child_results
         map(self._task_queue.put, child_tasks)
 
-
     def _resolve(self, results: TaskResults) -> None:
         """
         Processes the results of a group of tasks that a parent task was waiting for,
@@ -528,7 +527,6 @@ class ParallelQueue(ClusterVisitor, Generic[ClusterType]):
 
         # Enqueue the continuation of the parent task
         self._task_queue.put(parent_task)
-
 
     def _worker(self) -> None:
         """

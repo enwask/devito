@@ -1,4 +1,3 @@
-from collections import namedtuple
 from collections.abc import Generator, Iterable
 from queue import Queue
 from threading import Event, RLock
@@ -241,7 +240,8 @@ class RecursionQueue(Generic[NodeType, ResultType]):
             result: ResultType = e.value
             self._process_result(task.parent_id, task.index, result)
 
-    def _process_result(self, parent_id: UUID | None, index: int, result: ResultType) -> None:
+    def _process_result(self, parent_id: UUID | None, index: int,
+                        result: ResultType) -> None:
         """
         Processes the result from a completed task, updating pending results for the
         parent if necessary or finalizing execution if it's the root task.
