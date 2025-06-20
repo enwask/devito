@@ -65,8 +65,8 @@ class ClusterVisitor(Generic[ClusterType]):
                  **kwargs) -> list[ClusterType]:
         raise NotImplementedError
 
-    def process(self, clusters: list[ClusterType]) -> list[Cluster]:
-        return self._process_fdta(clusters, 1)
+    def process(self, clusters: list[ClusterType], **kwargs) -> list[Cluster]:
+        return self._process_fdta(clusters, 1, **kwargs)
 
     def _make_key(self, cluster: ClusterType, level: int):
         assert self._q_ispace_in_key
@@ -474,7 +474,7 @@ class ParallelClusterVisitor(ClusterVisitor, Generic[ClusterType]):
             # The task is a continuation (i.e. we already did the divide step)
             if self._mode == ParallelClusterVisitor.Mode.DIVIDE_THEN_APPLY:
                 # In FDTA, apply the callback after the divide step
-                task.clusters = self.callback(*task.args(), **task.kwargs)
+                task.clusters = self.callback(task.clusters, task.prefix, **task.kwargs)
 
             # At this point the task is ready to be resolved
             # If this is the root task, store its result
@@ -500,7 +500,7 @@ class ParallelClusterVisitor(ClusterVisitor, Generic[ClusterType]):
         # The task is not a continuation
         if self._mode == ParallelClusterVisitor.Mode.APPLY_THEN_DIVIDE:
             # In FATD, apply the callback before the divide step
-            task.clusters = self.callback(*task.args(), **task.kwargs)
+            task.clusters = self.callback(task.clusters, task.prefix, **task.kwargs)
 
         # Assign an identifier and divide into sub-tasks
         task_id = new_task_id()
@@ -515,7 +515,8 @@ class ParallelClusterVisitor(ClusterVisitor, Generic[ClusterType]):
         # If not ready, place results in the waiting map and enqueue child tasks
         with self._tasks_waiting_lock:
             self._tasks_waiting[task_id] = child_results
-        map(self._task_queue.put, child_tasks)
+        for child_task in child_tasks:
+            self._task_queue.put(child_task)
 
     def _resolve(self, results: TaskResults) -> None:
         """
