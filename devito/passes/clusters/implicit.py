@@ -5,7 +5,7 @@ Passes to gather and form implicit equations from DSL abstractions.
 from collections import defaultdict
 from functools import singledispatch
 
-from devito.ir import SEQUENTIAL, Queue, Forward
+from devito.ir import SEQUENTIAL, ClusterVisitor, Forward
 from devito.symbolics import retrieve_dimensions
 from devito.tools import Bunch, frozendict, timed_pass
 from devito.types import Eq
@@ -33,7 +33,7 @@ def generate_implicit(clusters):
     return clusters
 
 
-class LowerMSD(Queue):
+class LowerMSD(ClusterVisitor):
     pass
 
 

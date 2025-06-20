@@ -6,7 +6,7 @@ from sympy import S
 import numpy as np
 
 from devito.ir import (Cluster, Backward, Forward, GuardBound, Interval,
-                       IntervalGroup, IterationSpace, Properties, Queue, Vector,
+                       IntervalGroup, IterationSpace, Properties, ClusterVisitor, Vector,
                        InitArray, lower_exprs, vmax, vmin)
 from devito.exceptions import CompilationError
 from devito.logger import warning
@@ -114,7 +114,7 @@ def buffering(clusters, key, sregistry, options, **kwargs):
     return clusters
 
 
-class InjectBuffers(Queue):
+class InjectBuffers(ClusterVisitor):
 
     # NOTE: We need to use a Queue because with multi-buffering we will need
     # to process the `db0` and `time` Dimensions separately for `last_idx` and

@@ -1,4 +1,4 @@
-from devito.ir.clusters.visitors import QueueStateful
+from devito.ir.clusters.visitors import StatefulClusterVisitor
 from devito.ir.support import (AFFINE, PARALLEL, PARALLEL_INDEP, PARALLEL_IF_ATOMIC,
                                SEQUENTIAL)
 from devito.tools import as_tuple, flatten, timed_pass
@@ -8,7 +8,7 @@ __all__ = ['analyze']
 
 @timed_pass()
 def analyze(clusters):
-    state = QueueStateful.State()
+    state = StatefulClusterVisitor.State()
 
     # Collect properties
     clusters = Parallelism(state).process(clusters)
@@ -20,7 +20,7 @@ def analyze(clusters):
     return processed
 
 
-class Detector(QueueStateful):
+class Detector(StatefulClusterVisitor):
 
     def process(self, elements):
         return self._process_fatd(elements, 1)

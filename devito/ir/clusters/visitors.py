@@ -5,16 +5,17 @@ from itertools import groupby
 from threading import Event, RLock
 from types import TracebackType
 from queue import Queue as TaskQueue
-from typing import Protocol, override
+from typing import Generic, TypeVar, override
 from uuid import UUID, uuid4
 
 from sympy import N
 
-from devito.ir.clusters.cluster import Cluster
+from devito.ir.clusters.cluster import Cluster, ClusterGroup
 from devito.ir.support import IterationSpace, Scope, null_ispace
 from devito.tools import as_tuple, flatten, GenericExecutor, timed_pass
 
-__all__ = ['Queue', 'QueueStateful', 'cluster_pass']
+__all__ = ['ClusterVisitor', 'StatefulClusterVisitor', 'ParallelClusterVisitor',
+           'cluster_pass']
 
 
 class Prefix(IterationSpace):
@@ -38,10 +39,14 @@ class Prefix(IterationSpace):
                      self.guards, self.properties, self.syncs))
 
 
-class Queue:
+# The type of elements operated on by a `ClusterVisitor`
+ClusterType = TypeVar('ClusterType', bound=Cluster | ClusterGroup)
+
+
+class ClusterVisitor(Generic[ClusterType]):
 
     """
-    A special queue to process Clusters based on a divide-and-conquer algorithm.
+    A special visitor to process Clusters based on a divide-and-conquer algorithm.
 
     Notes
     -----
@@ -58,14 +63,14 @@ class Queue:
     _q_properties_in_key = False
     _q_syncs_in_key = False
 
-    def callback(self, clusters: list[Cluster], prefix: IterationSpace | None,
-                 **kwargs) -> list[Cluster]:
+    def callback(self, clusters: list[ClusterType], prefix: IterationSpace | None,
+                 **kwargs) -> list[ClusterType]:
         raise NotImplementedError
 
-    def process(self, clusters):
+    def process(self, clusters: list[ClusterType]) -> list[Cluster]:
         return self._process_fdta(clusters, 1)
 
-    def _make_key(self, cluster, level):
+    def _make_key(self, cluster: ClusterType, level: int):
         assert self._q_ispace_in_key
         ispace = cluster.ispace[:level]
 
@@ -100,10 +105,12 @@ class Queue:
 
         return (prefix,) + subkey
 
-    def _make_key_hook(self, cluster, level):
+    def _make_key_hook(self, cluster: ClusterType, level: int) -> tuple:
         return ()
 
-    def _process_fdta(self, clusters, level, prefix=null_ispace, **kwargs):
+    def _process_fdta(self, clusters: list[ClusterType], level: int,
+                      prefix: IterationSpace | None = null_ispace, **kwargs) \
+            -> list[ClusterType]:
         """
         fdta -> First Divide Then Apply
         """
@@ -123,7 +130,9 @@ class Queue:
 
         return processed
 
-    def _process_fatd(self, clusters, level, prefix=None, **kwargs):
+    def _process_fatd(self, clusters: list[ClusterType], level: int,
+                      prefix: IterationSpace | None = None, **kwargs) \
+            -> list[ClusterType]:
         """
         fatd -> First Apply Then Divide
         """
@@ -143,10 +152,10 @@ class Queue:
         return processed
 
 
-class QueueStateful(Queue):
+class StatefulClusterVisitor(ClusterVisitor):
 
     """
-    A Queue carrying along some state. This is useful when one wants to avoid
+    A ClusterVisitor carrying along some state. This is useful when one wants to avoid
     expensive re-computations of information.
     """
 
@@ -158,16 +167,17 @@ class QueueStateful(Queue):
 
     def __init__(self, state=None):
         super().__init__()
-        self.state = state or QueueStateful.State()
+        self.state = state or StatefulClusterVisitor.State()
 
-    def _fetch_scope(self, clusters):
+    def _fetch_scope(self, clusters: list[ClusterType]) -> Scope:
         exprs = flatten(c.exprs for c in as_tuple(clusters))
         key = tuple(exprs)
         if key not in self.state.scopes:
             self.state.scopes[key] = Scope(exprs)
         return self.state.scopes[key]
 
-    def _fetch_properties(self, clusters, prefix):
+    def _fetch_properties(self, clusters: list[ClusterType],
+                          prefix: IterationSpace | None) -> dict:
         # If the situation is:
         #
         # t
@@ -196,7 +206,7 @@ def new_task_id() -> TaskId:
     return uuid4()
 
 
-class Task:
+class Task(Generic[ClusterType]):
     """
     Describes a task queued for execution in a `ParallelQueue`.
     """
@@ -204,7 +214,7 @@ class Task:
     __slots__ = ('parent_id', 'index', 'clusters', 'level', 'prefix', 'kwargs',
                  'is_continuation')
 
-    def __init__(self, parent_id: TaskId | None, index: int, clusters: list[Cluster],
+    def __init__(self, parent_id: TaskId | None, index: int, clusters: list[ClusterType],
                  level: int, prefix: IterationSpace | None, **kwargs) -> None:
         # Parent task identifier, or None for the root task
         self.parent_id = parent_id
@@ -220,13 +230,13 @@ class Task:
         # Whether this is a continuation (i.e. has received results from children)
         self.is_continuation = False
 
-    def args(self) -> tuple[list[Cluster], int, IterationSpace | None]:
+    def args(self) -> tuple[list[ClusterType], int, IterationSpace | None]:
         """
         Returns the arguments to be passed to the `ParallelCallback`.
         """
         return self.clusters, self.level, self.prefix
 
-    def put_results(self, results: list[Cluster]) -> None:
+    def put_results(self, results: list[ClusterType]) -> None:
         """
         Receives the results of child tasks and marks this task as a continuation.
         """
@@ -237,19 +247,19 @@ class Task:
         self.is_continuation = True
 
 
-class TaskResults:
+class TaskResults(Generic[ClusterType]):
     """
     Describes a group of task results that a parent `Task` is waiting for.
     """
 
     __slots__ = ('parent_task', 'results', 'num_waiting')
 
-    def __init__(self, parent_task: Task, num_tasks: int = 0):
+    def __init__(self, parent_task: Task[ClusterType], num_tasks: int = 0):
         self.parent_task = parent_task
-        self.results: list[list[Cluster] | None] = [None] * num_tasks
+        self.results: list[list[ClusterType] | None] = [None] * num_tasks
         self.num_waiting = num_tasks
 
-    def append(self, result: list[Cluster] | None) -> None:
+    def append(self, result: list[ClusterType] | None) -> None:
         """
         Appends a result (or None value for a task we're waiting for) to
         the results list.
@@ -264,7 +274,7 @@ class TaskResults:
         """
         return self.num_waiting == 0
 
-    def put_result(self, index: int, result: list[Cluster]) -> bool:
+    def put_result(self, index: int, result: list[ClusterType]) -> bool:
         """
         Places a result in the task group and returns True if all results
         have been received.
@@ -282,7 +292,7 @@ class TaskResults:
         """
         return len(self.results)
 
-    def flatten(self) -> list[Cluster]:
+    def flatten(self) -> list[ClusterType]:
         """
         Flattens the results into a single list of Clusters.
         """
@@ -292,7 +302,7 @@ class TaskResults:
         return flatten(self.results)
 
 
-class ParallelQueue(Queue):
+class ParallelQueue(ClusterVisitor, Generic[ClusterType]):
 
     """
     A `Queue` that can be used in parallel.
@@ -326,14 +336,14 @@ class ParallelQueue(Queue):
         self._executor: GenericExecutor | None = None
 
         # Queue of tasks awaiting an available worker thread
-        self._task_queue: TaskQueue[Task | None] | None = TaskQueue()
+        self._task_queue: TaskQueue[Task[ClusterType] | None] | None = TaskQueue()
 
         # Map of parent task IDs to the results they're waiting for
-        self._tasks_waiting: dict[TaskId, TaskResults] = {}
+        self._tasks_waiting: dict[TaskId, TaskResults[ClusterType]] = {}
         self._tasks_waiting_lock = RLock()
 
         # Root result + event for marking completion of the root task
-        self._root_task_result: list[Cluster] | None = None
+        self._root_task_result: list[ClusterType] | None = None
         self._root_task_event = Event()
 
         # Current processing mode, triggered by a call to one of the process methods
@@ -382,8 +392,8 @@ class ParallelQueue(Queue):
         self._executor.shutdown(wait=True)
 
     @override
-    def _process_fatd(self, clusters: list[Cluster], level: int,
-                      prefix: IterationSpace = null_ispace, **kwargs) -> list[Cluster]:
+    def _process_fatd(self, clusters: list[ClusterType], level: int,
+                      prefix: IterationSpace | None = None, **kwargs) -> list[ClusterType]:
         """
         Processes a list of clusters in parallel with an apply-then-divide strategy.
         """
@@ -391,16 +401,17 @@ class ParallelQueue(Queue):
         return self._process(clusters, level, prefix, **kwargs)
 
     @override
-    def _process_fdta(self, clusters: list[Cluster], level: int,
-                      prefix: IterationSpace = null_ispace, **kwargs) -> list[Cluster]:
+    def _process_fdta(self, clusters: list[ClusterType], level: int,
+                      prefix: IterationSpace | None = null_ispace, **kwargs) \
+            -> list[ClusterType]:
         """
         Processes a list of clusters in parallel with a divide-then-apply strategy.
         """
         self._mode = ParallelQueue.Mode.DIVIDE_THEN_APPLY
         return self._process(clusters, level, prefix, **kwargs)
 
-    def _process(self, clusters: list[Cluster], level: int,
-                      prefix: IterationSpace = null_ispace, **kwargs) -> list[Cluster]:
+    def _process(self, clusters: list[ClusterType], level: int,
+                      prefix: IterationSpace | None, **kwargs) -> list[ClusterType]:
         """
         Processes a list of clusters in parallel with the currently set processing mode.
         """
@@ -426,12 +437,13 @@ class ParallelQueue(Queue):
         self._mode = ParallelQueue.Mode.NONE
         return self._root_task_result
 
-    def _divide(self, task_id: TaskId | None, task: Task) -> tuple[list[Task], TaskResults]:
+    def _divide(self, task_id: TaskId | None, task: Task[ClusterType]) \
+            -> tuple[list[Task[ClusterType]], TaskResults[ClusterType]]:
         """
         Divide step. Returns a list of child tasks, if any, and a `TaskResults`
         object to await the results of the child tasks.
         """
-        tasks: list[Task] = []
+        tasks: list[Task[ClusterType]] = []
         results = TaskResults(parent_task=task)
 
         clusters, level, _ = task.args()
@@ -454,7 +466,7 @@ class ParallelQueue(Queue):
         # Return the results object and the list of tasks to schedule
         return tasks, results
 
-    def _process_task(self, task: Task) -> None:
+    def _process_task(self, task: Task[ClusterType]) -> None:
         """
         Processes a single task depending on the current processing mode.
         """

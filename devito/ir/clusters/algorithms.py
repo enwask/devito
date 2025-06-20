@@ -12,7 +12,7 @@ from devito.ir.support import (Any, Backward, Forward, IterationSpace, erange,
 from devito.ir.equations import OpMin, OpMax, identity_mapper
 from devito.ir.clusters.analysis import analyze
 from devito.ir.clusters.cluster import Cluster, ClusterGroup
-from devito.ir.clusters.visitors import Queue, QueueStateful, cluster_pass
+from devito.ir.clusters.visitors import ClusterVisitor, StatefulClusterVisitor, cluster_pass
 from devito.mpi.halo_scheme import HaloScheme, HaloTouch
 from devito.mpi.reduction_scheme import DistReduce
 from devito.symbolics import (limits_mapper, retrieve_indexed, uxreplace,
@@ -77,7 +77,7 @@ def impose_total_ordering(clusters):
     return processed
 
 
-class Schedule(QueueStateful):
+class Schedule(StatefulClusterVisitor):
 
     """
     This special Queue produces a new sequence of "scheduled" Clusters, which
@@ -266,7 +266,7 @@ def guard(clusters):
     return ClusterGroup(processed)
 
 
-class Stepper(Queue):
+class Stepper(ClusterVisitor):
 
     """
     Produce a new sequence of Clusters in which the IterationSpaces carry the
@@ -384,7 +384,7 @@ def communications(clusters):
     return clusters
 
 
-class HaloComms(Queue):
+class HaloComms(ClusterVisitor):
 
     """
     Inject Clusters representing halo exchanges for distributed-memory parallelism.

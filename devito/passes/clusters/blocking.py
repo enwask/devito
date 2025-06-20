@@ -1,7 +1,7 @@
 from sympy import sympify
 
 from devito.finite_differences.differentiable import IndexSum
-from devito.ir.clusters import Queue
+from devito.ir.clusters import ClusterVisitor
 from devito.ir.support import (AFFINE, PARALLEL, PARALLEL_IF_ATOMIC,
                                PARALLEL_IF_PVT, SKEWABLE, TILABLES, Interval,
                                IntervalGroup, IterationSpace, Scope)
@@ -70,7 +70,7 @@ def blocking(clusters, sregistry, options):
     return clusters
 
 
-class AnayzeBlockingBase(Queue):
+class AnayzeBlockingBase(ClusterVisitor):
 
     """
     Encode the TILABLE property.
@@ -289,7 +289,7 @@ class AnalyzeHeuristicBlocking(AnayzeBlockingBase):
         return processed
 
 
-class AnalyzeSkewing(Queue):
+class AnalyzeSkewing(ClusterVisitor):
 
     """
     Encode the SKEWABLE Dimensions.
@@ -311,7 +311,7 @@ class AnalyzeSkewing(Queue):
         return processed
 
 
-class SynthesizeBlocking(Queue):
+class SynthesizeBlocking(ClusterVisitor):
 
     _q_guards_in_key = True
 
@@ -585,7 +585,7 @@ class BlockSizeGenerator:
         return umt.next()
 
 
-class SynthesizeSkewing(Queue):
+class SynthesizeSkewing(ClusterVisitor):
 
     """
     Construct a new sequence of clusters with skewed expressions and

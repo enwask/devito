@@ -4,7 +4,7 @@ from sympy import S
 import numpy as np
 
 from devito.finite_differences import IndexDerivative
-from devito.ir import Backward, Forward, Interval, IterationSpace, Queue
+from devito.ir import Backward, Forward, Interval, IterationSpace, ClusterVisitor
 from devito.passes.clusters.misc import fuse
 from devito.symbolics import BasicWrapperMixin, reuse_if_untouched, uxreplace
 from devito.tools import infer_dtype, timed_pass
@@ -197,7 +197,7 @@ deriv_unroll_registry = {
 }
 
 
-class CDE(Queue):
+class CDE(ClusterVisitor):
 
     """
     Common derivative elimination.

@@ -2,7 +2,7 @@ from collections import Counter, defaultdict
 from itertools import groupby, product
 
 from devito.finite_differences import IndexDerivative
-from devito.ir.clusters import Cluster, ClusterGroup, Queue, cluster_pass
+from devito.ir.clusters import Cluster, ClusterGroup, ClusterVisitor, cluster_pass
 from devito.ir.support import (SEQUENTIAL, SEPARABLE, Scope, ReleaseLock, WaitLock,
                                WithLock, InitArray, SyncArray, PrefetchUpdate)
 from devito.passes.clusters.utils import in_critical_region
@@ -13,7 +13,7 @@ from devito.types import Hyperplane
 __all__ = ['Lift', 'fuse', 'optimize_pows', 'fission', 'optimize_hyperplanes']
 
 
-class Lift(Queue):
+class Lift(ClusterVisitor):
 
     """
     Remove invariant Dimensions from Clusters to avoid redundant computation.
@@ -108,7 +108,7 @@ class Lift(Queue):
         return lifted + processed
 
 
-class Fusion(Queue):
+class Fusion(ClusterVisitor):
 
     """
     Fuse Clusters with compatible IterationSpace.
@@ -423,7 +423,7 @@ def optimize_pows(cluster, *args):
     return cluster.rebuild(exprs=[pow_to_mul(e) for e in cluster.exprs])
 
 
-class Fission(Queue):
+class Fission(ClusterVisitor):
 
     """
     Implement Clusters fission. For more info refer to fission.__doc__.

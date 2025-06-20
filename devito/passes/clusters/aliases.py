@@ -8,7 +8,7 @@ import sympy
 from devito.exceptions import CompilationError
 from devito.finite_differences import EvalDerivative, IndexDerivative, Weights
 from devito.ir import (SEQUENTIAL, PARALLEL_IF_PVT, SEPARABLE, Forward,
-                       IterationSpace, Interval, Cluster, ExprGeometry, Queue,
+                       IterationSpace, Interval, Cluster, ExprGeometry, ClusterVisitor,
                        IntervalGroup, LabeledVector, Vector, normalize_properties,
                        relax_properties, unbounded, minimum, maximum, extrema,
                        vmax, vmin)
@@ -228,7 +228,7 @@ class CireTransformerLegacy(CireTransformer):
         return mapper
 
 
-class CireInvariants(CireTransformerLegacy, Queue):
+class CireInvariants(CireTransformerLegacy, ClusterVisitor):
 
     def __init__(self, sregistry, options, platform):
         super().__init__(sregistry, options, platform)
