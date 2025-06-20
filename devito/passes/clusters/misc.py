@@ -2,12 +2,14 @@ from collections import Counter, defaultdict
 from itertools import groupby, product
 
 from devito.finite_differences import IndexDerivative
-from devito.ir.clusters import Cluster, ClusterGroup, ClusterVisitor, cluster_pass
+from devito.ir.clusters import (Cluster, ClusterGroup, ClusterVisitor, cluster_pass,
+                                ParallelClusterVisitor)
 from devito.ir.support import (SEQUENTIAL, SEPARABLE, Scope, ReleaseLock, WaitLock,
                                WithLock, InitArray, SyncArray, PrefetchUpdate)
 from devito.passes.clusters.utils import in_critical_region
 from devito.symbolics import pow_to_mul, search
-from devito.tools import DAG, Stamp, as_tuple, flatten, frozendict, timed_pass
+from devito.tools import (DAG, Stamp, as_tuple, flatten, frozendict, get_executor,
+                          timed_pass)
 from devito.types import Hyperplane
 
 __all__ = ['Lift', 'fuse', 'optimize_pows', 'fission', 'optimize_hyperplanes']
@@ -108,7 +110,7 @@ class Lift(ClusterVisitor):
         return lifted + processed
 
 
-class Fusion(ClusterVisitor):
+class Fusion(ParallelClusterVisitor):
 
     """
     Fuse Clusters with compatible IterationSpace.
@@ -117,25 +119,24 @@ class Fusion(ClusterVisitor):
     _q_guards_in_key = True
     _q_syncs_in_key = True
 
-    def __init__(self, toposort, options=None):
+    def __init__(self, options=None):
         options = options or {}
 
-        self.toposort = toposort
         self.fusetasks = options.get('fuse-tasks', False)
 
         super().__init__()
 
-    def process(self, clusters):
+    def process(self, clusters, toposort: str | bool = False):
         cgroups = [ClusterGroup(c, c.ispace) for c in clusters]
-        cgroups = self._process_fdta(cgroups, 1)
+        cgroups = self._process_fdta(cgroups, 1, toposort=toposort)
         clusters = ClusterGroup.concatenate(*cgroups)
         return clusters
 
-    def callback(self, cgroups, prefix):
+    def callback(self, cgroups, prefix, toposort: str | bool = False):
         # Toposort to maximize fusion
-        if self.toposort:
+        if toposort:
             clusters = self._toposort(cgroups, prefix)
-            if self.toposort == 'nofuse':
+            if toposort == 'nofuse':
                 return [clusters]
         else:
             clusters = ClusterGroup(cgroups)
@@ -159,7 +160,7 @@ class Fusion(ClusterVisitor):
 
         # Maximize effectiveness of topo-sorting at next stage by only
         # grouping together Clusters characterized by data dependencies
-        if self.toposort and prefix:
+        if toposort and prefix:
             dag = self._build_dag(processed, prefix)
             mapper = dag.connected_components(enumerated=True)
             groups = groupby(processed, key=mapper.get)
@@ -389,7 +390,7 @@ class Fusion(ClusterVisitor):
 
 
 @timed_pass()
-def fuse(clusters, toposort=False, options=None):
+def fuse(clusters, toposort: str | bool = False, options: dict | None = None):
     """
     Clusters fusion.
 
@@ -401,16 +402,24 @@ def fuse(clusters, toposort=False, options=None):
     times to actually maximize Clusters fusion. Hence, this is more aggressive than
     `toposort=True`.
     """
+    with Fusion(options).start_threaded(executor=get_executor(max_workers=1)) as fusion:
+        return _fuse(fusion, clusters, toposort=toposort)
+
+
+def _fuse(fusion: Fusion, clusters: list[Cluster], toposort: str | bool = False):
+    """
+    A helper function to perform fusion with a given `Fusion` instance.
+    """
     if toposort != 'maximal':
-        return Fusion(toposort, options).process(clusters)
+        return fusion.process(clusters, toposort=toposort)
 
     nxt = clusters
     while True:
-        nxt = fuse(clusters, toposort='nofuse', options=options)
+        nxt = _fuse(fusion, clusters, toposort='nofuse')
         if all(c0 is c1 for c0, c1 in zip(clusters, nxt)):
             break
         clusters = nxt
-    clusters = fuse(clusters, toposort=False, options=options)
+    clusters = _fuse(fusion, clusters, toposort=False)
 
     return clusters
 
