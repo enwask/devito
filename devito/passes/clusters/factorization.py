@@ -5,7 +5,7 @@ from sympy import Add, Mul, S, collect
 from devito.ir import cluster_pass
 from devito.symbolics import (BasicWrapperMixin, estimate_cost, reuse_if_untouched,
                               retrieve_symbols, q_routine)
-from devito.tools import ReducerMap
+from devito.tools import get_executor, ReducerMap
 from devito.types.object import AbstractObject
 
 __all__ = ['factorize']
@@ -32,22 +32,33 @@ def factorize(cluster, *args, options=None, **kwargs):
     except TypeError:
         strategy = 'basic'
 
-    processed = []
-    for expr in cluster.exprs:
-        handle = collect_nested(expr, strategy)
-        cost_handle = estimate_cost(handle)
-
-        if cost_handle >= MIN_COST_FACTORIZE:
-            handle_prev = handle
-            cost_prev = estimate_cost(expr)
-            while cost_handle < cost_prev:
-                handle_prev, handle = handle, collect_nested(handle, strategy)
-                cost_prev, cost_handle = cost_handle, estimate_cost(handle)
-            cost_handle, handle = cost_prev, handle_prev
-
-        processed.append(handle)
+    if len(cluster.exprs) > 1:
+        # If we have multiple expressions, try to parallelize factorization
+        with get_executor() as executor:
+            processed = executor.map(_factorize, cluster.exprs,
+                                    [strategy] * len(cluster.exprs))
+    else:
+        processed = [_factorize(expr, strategy) for expr in cluster.exprs]
 
     return cluster.rebuild(processed)
+
+
+def _factorize(expr, strategy: str):
+    """
+    Applies factorization to a single expression.
+    """
+    handle = collect_nested(expr, strategy)
+    cost_handle = estimate_cost(handle)
+
+    if cost_handle >= MIN_COST_FACTORIZE:
+        handle_prev = handle
+        cost_prev = estimate_cost(expr)
+        while cost_handle < cost_prev:
+            handle_prev, handle = handle, collect_nested(handle, strategy)
+            cost_prev, cost_handle = cost_handle, estimate_cost(handle)
+        cost_handle, handle = cost_prev, handle_prev
+
+    return handle
 
 
 def collect_special(expr, strategy):
@@ -190,6 +201,7 @@ strategies = {
 }
 
 
+# TODO: possible optimization—if an expression didn't change last time, it won't change again so maintain a memo?
 def _collect_nested(expr, strategy):
     """
     Recursion helper for `collect_nested`.
