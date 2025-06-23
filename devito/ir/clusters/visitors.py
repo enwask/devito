@@ -1,5 +1,6 @@
 from collections import defaultdict
 from collections.abc import Iterable
+from concurrent.futures import Future
 from enum import Enum
 from itertools import groupby
 from threading import Event, Lock
@@ -339,6 +340,7 @@ class ParallelClusterVisitor(ClusterVisitor[ClusterType]):
 
         # Queue of tasks awaiting an available worker thread
         self._task_queue: TaskQueue[Task[ClusterType] | None] = TaskQueue()
+        self._futures: list[Future[None]] = []
 
         # Map of parent task IDs to the results they're waiting for
         self._tasks_waiting: dict[TaskId, TaskResults[ClusterType]] = {}
@@ -347,6 +349,9 @@ class ParallelClusterVisitor(ClusterVisitor[ClusterType]):
         # Root result + event for marking completion of the root task
         self._root_task_result: list[ClusterType] | None = None
         self._root_task_event = Event()
+
+        # Exception from a worker thread, if any
+        self._exception: Exception | None = None
 
         # Current processing mode, triggered by a call to one of the process methods
         self._mode = ParallelClusterVisitor.Mode.NONE
@@ -400,8 +405,8 @@ class ParallelClusterVisitor(ClusterVisitor[ClusterType]):
                 raise ValueError("Executor must have at least one worker thread")
 
             # Spin up workers equal to the number of available threads
-            for _ in range(self._executor.max_workers):
-                self._executor.submit(self._worker)
+            self._futures = [self._executor.submit(self._worker)
+                             for _ in range(self._executor.max_workers)]
 
         return self
 
@@ -415,9 +420,14 @@ class ParallelClusterVisitor(ClusterVisitor[ClusterType]):
             if self._executor is None:
                 raise RuntimeError("Executor was cleared or not initialized")
 
-            # Signal worker threads and wait for them to shut down
+            # Signal the worker threads
             for _ in range(self._executor.max_workers):
                 self._task_queue.put(None)
+
+            # Wait for all worker threads to finish
+            for future in self._futures:
+                future.result()  # Block until the thread closes
+            self._futures.clear()
 
             # Exit the executor context and clean up
             self._executor.__exit__(exc_type, exc_value, traceback)
@@ -464,8 +474,9 @@ class ParallelClusterVisitor(ClusterVisitor[ClusterType]):
 
         # Clean up from a potential previous run
         self._tasks_waiting.clear()
-        self._root_task_result = None
         self._root_task_event.clear()
+        self._root_task_result = None
+        self._exception = None
 
         # Create the root task and enqueue it
         root_task = Task(parent_id=None, index=-1, clusters=clusters, level=level,
@@ -475,8 +486,18 @@ class ParallelClusterVisitor(ClusterVisitor[ClusterType]):
         # Wait for the root task to finish processing
         self._root_task_event.wait()
 
+        # Get a possible exception from worker threads, but finish cleanup first
+        exception = self._exception
+        self._exception = None
+
         # Unset processing mode and return the root result
         self._mode = ParallelClusterVisitor.Mode.NONE
+
+        # If a worker thread encountered an exception from the callback, re-raise
+        if exception is not None:
+            raise exception
+
+        # Otherwise, return the result of the root task
         return self._root_task_result
 
     def _divide(self, task_id: TaskId | None, task: Task[ClusterType]) \
@@ -592,8 +613,12 @@ class ParallelClusterVisitor(ClusterVisitor[ClusterType]):
                 break
 
             # Process the task based on the current mode
-            # FIXME: Must propagate exceptions to the main thread
-            self._process_task(task)
+            try:
+                self._process_task(task)
+            except Exception as e:
+                # If an exception occured, store it and signal the root task
+                self._exception = e
+                self._root_task_event.set()
 
 
 class cluster_pass:
