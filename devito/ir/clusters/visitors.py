@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 from devito.ir.clusters.cluster import Cluster, ClusterGroup
 from devito.ir.support import IterationSpace, Scope, null_ispace
-from devito.tools import as_tuple, flatten, GenericExecutor, timed_pass
+from devito.tools import as_tuple, flatten, GenericExecutor, get_executor, timed_pass
 
 __all__ = ['ClusterVisitor', 'StatefulClusterVisitor', 'ParallelClusterVisitor',
            'cluster_pass']
@@ -314,11 +314,14 @@ class ParallelClusterVisitor(ClusterVisitor, Generic[ClusterType]):
 
         visitor = SomeVisitor(...)
         with visitor.start_threaded(executor):
-            visitor.process(clusters)
+            result = visitor.process(clusters)
 
         # or...
         with SomeVisitor(...).start_threaded(executor) as visitor:
-            visitor.process(clusters)
+            result = visitor.process(clusters)
+
+        # Can also still be used as a regular visitor:
+        result = SomeVisitor(...).process(clusters)
     """
 
     class Mode(str, Enum):
@@ -331,11 +334,11 @@ class ParallelClusterVisitor(ClusterVisitor, Generic[ClusterType]):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # Executor for worker threads
+        self._is_threaded = False
         self._executor: GenericExecutor | None = None
 
         # Queue of tasks awaiting an available worker thread
-        self._task_queue: TaskQueue[Task[ClusterType] | None] | None = TaskQueue()
+        self._task_queue: TaskQueue[Task[ClusterType] | None] = TaskQueue()
 
         # Map of parent task IDs to the results they're waiting for
         self._tasks_waiting: dict[TaskId, TaskResults[ClusterType]] = {}
@@ -348,47 +351,78 @@ class ParallelClusterVisitor(ClusterVisitor, Generic[ClusterType]):
         # Current processing mode, triggered by a call to one of the process methods
         self._mode = ParallelClusterVisitor.Mode.NONE
 
-    def start_threaded(self, executor: GenericExecutor) -> 'ParallelClusterVisitor':
+    def start_threaded(self, max_workers: int = None) -> 'ParallelClusterVisitor':
         """
-        Starts the queue in a threaded context, using the provided `executor`.
+        Starts the queue in a threaded context, forcing the use of a `ThreadedExecutor`
+        with the specified number of worker threads. If `max_workers` is `None`, the
+        executor will default to the number of available CPUs.
         """
         if self._executor is not None:
             raise RuntimeError("ParallelQueue already has an executor attached")
 
-        self._executor = executor
+        # Set up the executor
+        self._is_threaded = True
+        self._executor = get_executor(max_workers=max_workers, force_threaded=True)
+
+        return self
+
+    def maybe_threaded(self, max_workers: int = None, force_threaded: bool = False) \
+            -> 'ParallelClusterVisitor':
+        """
+        Defers to `get_executor` to determine whether the visitor should run in parallel.
+        If `force_threaded` is `True`, always uses a threaded executor.
+
+        If a threaded executor is returned, it will be constructed with the specified
+        number of worker threads, or default to the number of available CPUs if
+        `max_workers` is `None`.
+
+        Otherwise, this is a no-op and the visitor will run in serial.
+        """
+        # Defer to the executor factory to determine whether we should use threading
+        executor = get_executor(max_workers=max_workers, force_threaded=force_threaded)
+
+        # If we got a threaded executor, set it up
+        if executor.max_workers > 0:
+            self._is_threaded = True
+            self._executor = executor
 
         return self
 
     def __enter__(self) -> 'ParallelClusterVisitor':
         """
-        Enters the threaded context, spinning up a number of worker threads equal to
-        the executor's `max_workers`.
+        If threading is enabled, spins up worker threads and enters the threaded context.
+        Otherwise, this is a no-op.
         """
-        if self._executor is None:
-            raise ValueError("ParallelQueue must be initialized with an executor")
-        if self._executor.max_workers < 1:
-            raise ValueError("Executor must have at least one worker thread")
+        if self._is_threaded:
+            if self._executor is None:
+                raise ValueError("Threading is enabled, but no executor was provided")
+            if self._executor.max_workers < 1:
+                raise ValueError("Executor must have at least one worker thread")
 
-        # Spin up workers equal to the number of available threads
-        for _ in range(self._executor.max_workers):
-            self._executor.submit(self._worker)
+            # Spin up workers equal to the number of available threads
+            for _ in range(self._executor.max_workers):
+                self._executor.submit(self._worker)
 
         return self
 
     def __exit__(self, exc_type: type[Exception], exc_value: Exception,
                  traceback: TracebackType) -> None:
         """
-        Exits the threaded context, cleaning up the executor and waiting for all
-        tasks to finish.
+        If threading is enabled, cleans up the executor and waits for all threads to
+        cleanly exit. Otherwise, this is a no-op.
         """
-        if self._executor is None:
-            raise RuntimeError("ParallelQueue executor was cleared or not initialized")
+        if self._is_threaded:
+            if self._executor is None:
+                raise RuntimeError("Executor was cleared or not initialized")
 
-        # Signal worker threads and wait for them to shut down
-        for _ in range(self._executor.max_workers):
-            self._task_queue.put(None)
+            # Signal worker threads and wait for them to shut down
+            for _ in range(self._executor.max_workers):
+                self._task_queue.put(None)
 
-        self._executor.shutdown(wait=True)
+            # Clean up the executor and reset the state
+            self._executor.shutdown(wait=True)
+            self._is_threaded = False
+            self._executor = None
 
     @override
     def _process_fatd(self, clusters: list[ClusterType], level: int,
@@ -397,6 +431,10 @@ class ParallelClusterVisitor(ClusterVisitor, Generic[ClusterType]):
         """
         Processes a list of clusters in parallel with an apply-then-divide strategy.
         """
+        # If not in a threaded context, fall back to serial processing
+        if not self._is_threaded:
+            return super()._process_fatd(clusters, level, prefix, **kwargs)
+
         self._mode = ParallelClusterVisitor.Mode.APPLY_THEN_DIVIDE
         return self._process(clusters, level, prefix, **kwargs)
 
@@ -407,6 +445,10 @@ class ParallelClusterVisitor(ClusterVisitor, Generic[ClusterType]):
         """
         Processes a list of clusters in parallel with a divide-then-apply strategy.
         """
+        # If not in a threaded context, fall back to serial processing
+        if not self._is_threaded:
+            return super()._process_fdta(clusters, level, prefix, **kwargs)
+
         self._mode = ParallelClusterVisitor.Mode.DIVIDE_THEN_APPLY
         return self._process(clusters, level, prefix, **kwargs)
 
@@ -416,7 +458,7 @@ class ParallelClusterVisitor(ClusterVisitor, Generic[ClusterType]):
         Processes a list of clusters in parallel with the currently set processing mode.
         """
         if self._executor is None:
-            raise RuntimeError("ParallelQueue must be started with an executor")
+            raise RuntimeError("Executor must be set in threaded mode")
         if self._task_queue.qsize() > 0:
             raise RuntimeError("Task queue is nonempty; something's gone terribly wrong")
 
