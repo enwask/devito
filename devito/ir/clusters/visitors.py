@@ -2,7 +2,7 @@ from collections import defaultdict
 from collections.abc import Iterable
 from enum import Enum
 from itertools import groupby
-from threading import Event, RLock
+from threading import Event, Lock
 from types import TracebackType
 from queue import Queue as TaskQueue
 from typing import Generic, TypeVar, override
@@ -300,7 +300,7 @@ class TaskResults(Generic[ClusterType]):
         return flatten(self.results)
 
 
-class ParallelClusterVisitor(ClusterVisitor, Generic[ClusterType]):
+class ParallelClusterVisitor(ClusterVisitor[ClusterType]):
 
     """
     A `ClusterVisitor` that can be used in parallel.
@@ -342,7 +342,7 @@ class ParallelClusterVisitor(ClusterVisitor, Generic[ClusterType]):
 
         # Map of parent task IDs to the results they're waiting for
         self._tasks_waiting: dict[TaskId, TaskResults[ClusterType]] = {}
-        self._tasks_waiting_lock = RLock()
+        self._tasks_waiting_lock = Lock()
 
         # Root result + event for marking completion of the root task
         self._root_task_result: list[ClusterType] | None = None
@@ -419,10 +419,10 @@ class ParallelClusterVisitor(ClusterVisitor, Generic[ClusterType]):
             for _ in range(self._executor.max_workers):
                 self._task_queue.put(None)
 
-            # Clean up the executor and reset the state
-            self._executor.shutdown(wait=True)
-            self._is_threaded = False
+            # Exit the executor context and clean up
+            self._executor.__exit__(exc_type, exc_value, traceback)
             self._executor = None
+            self._is_threaded = False
 
     @override
     def _process_fatd(self, clusters: list[ClusterType], level: int,
@@ -532,9 +532,12 @@ class ParallelClusterVisitor(ClusterVisitor, Generic[ClusterType]):
                     raise RuntimeError(f"Parent task {task.parent_id} not found")
 
                 if results.put_result(task.index, task.clusters):
-                    # If all results are ready, process them
-                    self._tasks_waiting.pop(task.parent_id, None)
-                    self._resolve(results)
+                    # If all results are ready, remove from the waiting map
+                    del self._tasks_waiting[task.parent_id]
+
+            if results.ready():
+                # Results are ready; resolve the continuation
+                self._resolve(results)
 
             # Done processing continuation task
             return
@@ -554,9 +557,16 @@ class ParallelClusterVisitor(ClusterVisitor, Generic[ClusterType]):
             self._process_task(task)
             return
 
-        # If not ready, place results in the waiting map and enqueue child tasks
+        # If not ready, place results in the waiting map
         with self._tasks_waiting_lock:
             self._tasks_waiting[task_id] = child_results
+
+        # If there's only one child task, skip the queue and process it directly
+        if len(child_tasks) == 1:
+            self._process_task(child_tasks[0])
+            return
+
+        # Otherwise, enqueue all child tasks for processing
         for child_task in child_tasks:
             self._task_queue.put(child_task)
 
@@ -568,8 +578,8 @@ class ParallelClusterVisitor(ClusterVisitor, Generic[ClusterType]):
         parent_task = results.parent_task
         parent_task.put_results(results.flatten())
 
-        # Enqueue the continuation of the parent task
-        self._task_queue.put(parent_task)
+        # Process the continuation in the current thread
+        self._process_task(parent_task)
 
     def _worker(self) -> None:
         """
@@ -582,6 +592,7 @@ class ParallelClusterVisitor(ClusterVisitor, Generic[ClusterType]):
                 break
 
             # Process the task based on the current mode
+            # FIXME: Must propagate exceptions to the main thread
             self._process_task(task)
 
 
