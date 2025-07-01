@@ -15,7 +15,7 @@ CachedType = TypeVar('CachedType')
 
 class Method(Generic[InstanceType, ReturnType], Protocol):
     """
-    Protocol for an instance method
+    Protocol for an instance method.
     """
     def __call__(self, obj: InstanceType,
                  *args: Hashable, **kwargs: Hashable) -> ReturnType:
@@ -112,10 +112,10 @@ class memoized_meth(Generic[InstanceType, ReturnType, CachedType]):
         """
         return value
 
-    def _from_cached(self, value: CachedType) -> ReturnType:
+    def _postprocess(self, value: CachedType, cache_hit: bool) -> ReturnType:
         """
-        Converts the cached value back to the original return type.
-        This can be overridden in subclasses to customize caching behavior.
+        Converts a cached value back to the original return type. This can be
+        overridden in subclasses to customize caching behavior.
         """
         return value
 
@@ -138,20 +138,21 @@ class memoized_meth(Generic[InstanceType, ReturnType, CachedType]):
             cache: dict[int, CachedType] = obj._memoized_method_cache
 
             # If arguments are not hashable, just evaluate the method directly
-            if not isinstance(args, Hashable):
+            if not all(isinstance(arg, Hashable) for arg in args):
                 return self._meth(obj, *args, **kwargs)
 
             # Key for the method call with all arguments
             key = hash((self._meth, args, frozenset(kwargs.items())))
 
             with self._acquire_method_lock(obj, *args, **kwargs):
-                if key not in cache:
+                cache_hit = key in cache
+                if not cache_hit:
                     # If the result is not cached, call the method and cache the result
-                    result = self._to_cached(self._meth(obj, *args, **kwargs))
-                    cache[key] = result
-                else:
-                    # Otherwise retrieve the cached result
-                    result = self._from_cached(cache[key])
+                    cache[key] = self._to_cached(self._meth(obj, *args, **kwargs))
+
+                # Retrieve and post-process the (possibly newly) cached result
+                result = self._postprocess(cache[key], cache_hit)
+
             return result
 
         except AttributeError as e:
@@ -254,7 +255,8 @@ class memoized_generator(memoized_meth[InstanceType, Iterator[ElementType],
         """
         return SafeTee(value)
 
-    def _from_cached(self, value: SafeTee[ElementType]) -> Iterator[ElementType]:
+    def _postprocess(self, value: SafeTee[ElementType],
+                     cache_hit: bool) -> Iterator[ElementType]:
         """
         Safely tees the cached generator, sharing the original buffer and lock.
         """
