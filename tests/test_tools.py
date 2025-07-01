@@ -1,3 +1,4 @@
+from typing import Iterator
 import numpy as np
 import pytest
 from sympy.abc import a, b, c, d, e
@@ -5,8 +6,9 @@ from sympy.abc import a, b, c, d, e
 import time
 
 from devito.tools import (UnboundedMultiTuple, ctypes_to_cstr, toposort,
-                          filter_ordered, transitive_closure, UnboundTuple)
-from devito.tools.memoization import has_memoized_methods
+                          filter_ordered, transitive_closure, UnboundTuple,
+                          has_memoized_methods, memoized_meth,
+                          memoized_generator)
 from devito.types.basic import Symbol
 
 
@@ -157,7 +159,7 @@ class TestMemoizedMethods:
     @has_memoized_methods
     class Base:
         """
-        Base class for testing memoized instance methods
+        Base class for testing memoized instance methods.
         """
 
         with_init_finalize = False
@@ -172,7 +174,7 @@ class TestMemoizedMethods:
     class BaseWithFinalize(Base):
         """
         Base class for testing memoized instance methods on a class with Devito's
-        __init_finalize__ pattern
+        __init_finalize__ pattern.
         """
 
         with_init_finalize = True
@@ -185,16 +187,47 @@ class TestMemoizedMethods:
         def __init_finalize__(self, *args, **kwargs):
             self.did_init_finalize = True
 
-    @pytest.mark.parametrize('cls', [Base, BaseWithFinalize])
-    def test_has_memoized_methods_idempotency(self, cls: type[Base]):
+    @pytest.fixture(params=[Base, BaseWithFinalize])
+    def base(self, request) -> type[Base]:
+        """
+        Parametrizes all tests to run against a base class both with and without
+        Devito's `__init_finalize__` pattern.
+        """
+        return request.param
+
+    @pytest.fixture(autouse=True)
+    def track_cache_hits_misses(self, monkeypatch: pytest.MonkeyPatch):
+        """
+        Modifies `memoized_meth` and `memoized_generator` to track cache hits
+        and misses for testing.
+        """
+        def new(cls, *a, **kw):
+            dec = object.__new__(cls)
+            dec.hits = dec.misses = 0
+            return dec
+
+        def postprocess_meth(dec, value, cache_hit):
+            dec.hits += int(cache_hit)
+            dec.misses += int(not cache_hit)
+            return value
+
+        def postprocess_generator(dec, value, cache_hit):
+            dec.hits += int(cache_hit)
+            dec.misses += int(not cache_hit)
+            return value.tee()
+
+        monkeypatch.setattr(memoized_meth, '__new__', new)
+        monkeypatch.setattr(memoized_meth, '_postprocess', postprocess_meth)
+        monkeypatch.setattr(memoized_generator, '_postprocess', postprocess_generator)
+
+    def test_has_memoized_methods_idempotency(self, base: type[Base]):
         """
         Tests that applying the `@has_memoized_methods` decorator multiple times
         in an inheritance chain does not lead to multiple initializations
         """
-
         @has_memoized_methods
         @has_memoized_methods
-        class Test(cls):
+        class Test(base):
             def __init__(self, *args, **kwargs) -> None:
                 assert not hasattr(self, 'did_init')
                 super().__init__(*args, **kwargs)
@@ -209,6 +242,97 @@ class TestMemoizedMethods:
 
         # Check that the instance has been initialized correctly
         assert instance.did_init
-        if cls.with_init_finalize:
+        if base.with_init_finalize:
             assert instance.did_init_finalize
 
+    def test_memoized_meth(self, base: type[Base]):
+        """
+        Tests basic functionality of memoized methods.
+        """
+
+        class Test(base):
+            def __init__(self) -> None:
+                super().__init__()
+                self.seen: set[tuple[int, int]] = set()
+
+
+            @memoized_meth
+            def add(self, x: int, y: int) -> int:
+                assert (x, y) not in self.seen
+                self.seen.add((x, y))
+
+                return x + y
+
+        test = Test()
+        assert test.add(1, 2) == test.add(2, 1) == 3
+        assert test.add(1, 2) == test.add(2, 1) == 3
+
+        # Should have hit the cache once for (1,2 ) and once for (2, 1)
+        assert Test.add.hits == 2
+
+        # Calls on a new instance should not hit the cache
+        test2 = Test()
+        assert test2.add(1, 2) == test2.add(2, 1) == 3
+        assert Test.add.hits == 2
+
+    def test_unhashable_args(self, base: type[Base]):
+        """
+        Tests that memoized methods do not cache results for unhashable arguments.
+        """
+
+        class Test(base):
+            def __init__(self) -> None:
+                super().__init__()
+
+            @memoized_meth
+            def add(self, x: int, y: int, _: dict) -> int:
+                return x + y
+
+            @memoized_generator
+            def range(self, n: int, _: dict) -> Iterator[int]:
+                yield from range(n)
+
+
+        test = Test()
+        assert test.add(1, 2, {}) == test.add(2, 1, {}) == 3
+        assert test.add(1, 2, {}) == test.add(2, 1, {}) == 3
+
+        assert list(test.range(5, {})) == list(test.range(5, {})) == [0, 1, 2, 3, 4]
+
+        # Should not have interacted with the cache
+        assert Test.add.hits == Test.add.misses == 0
+        assert Test.range.hits == Test.range.misses == 0
+
+
+    def test_memoized_generator(self, base: type[Base]):
+        """
+        Tests basic functionality of memoized generators.
+        """
+
+        class Test(base):
+            def __init__(self) -> None:
+                super().__init__()
+                self.seen: set[tuple[int, int]] = set()
+
+            @memoized_generator
+            def range(self, n: int) -> Iterator[int]:
+                for i in range(n):
+                    assert (n, i) not in self.seen
+                    self.seen.add((n, i))
+                    yield i
+
+        test = Test()
+        gen1 = test.range(5)
+        gen2 = test.range(5)
+
+        # Both generators should yield the same values
+        assert list(gen1) == list(gen2) == [0, 1, 2, 3, 4]
+
+        # Should have hit the cache once for the generator
+        assert Test.range.hits == 1
+
+        # Calls on a new instance should not hit the cache
+        test2 = Test()
+        gen3 = test2.range(5)
+        assert list(gen3) == [0, 1, 2, 3, 4]
+        assert Test.range.hits == 1
