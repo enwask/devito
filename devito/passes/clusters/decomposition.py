@@ -114,8 +114,6 @@ def decompose_expressions(cluster: Cluster, sregistry: SymbolRegistry = None, op
     if temps_assigned:
         processed = _toposort(processed)
 
-    print(f"Decomposition created {len(temps_assigned)} temporaries ")
-
     return cluster.rebuild(exprs=processed)
 
 
