@@ -27,8 +27,8 @@ from devito.mpi import MPI
 from devito.parameters import configuration
 from devito.passes import (Graph, lower_index_derivatives, generate_implicit,
                            generate_macros, minimize_symbols, unevaluate,
-                           error_mapper, is_on_device, lower_dtypes)
-from devito.passes.clusters.decomposition import decompose_expressions
+                           error_mapper, is_on_device, lower_dtypes,
+                           decompose_clusters)
 from devito.symbolics import estimate_cost, subs_op_args
 from devito.tools import (DAG, OrderedSet, Signer, ReducerMap, as_mapper, as_tuple,
                           flatten, filter_sorted, frozendict, is_integer,
@@ -386,7 +386,7 @@ class Operator(Callable):
         init_ops = sum(estimate_cost(c.exprs) for c in clusters if c.is_dense)
 
         # Decompose clusters
-        clusters = decompose_expressions(clusters, **kwargs)
+        clusters = decompose_clusters(clusters, **kwargs)
 
         clusters = cls._specialize_clusters(clusters, **kwargs)
 

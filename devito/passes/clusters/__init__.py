@@ -1,6 +1,7 @@
 from .utils import *  # noqa
 from .buffering import *  # noqa
 from .cse import *  # noqa
+from .decomposition import * # noqa
 from .aliases import *  # noqa
 from .factorization import *  # noqa
 from .blocking import *  # noqa

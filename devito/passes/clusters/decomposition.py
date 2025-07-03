@@ -24,6 +24,9 @@ from devito.tools.dtypes_lowering import extract_dtype
 from devito.tools.utils import as_list
 
 
+__all__ = ['decompose_clusters']
+
+
 def extract_conditionals(expr: Expr) -> frozendict:
     try:
         return expr.conditionals
@@ -61,7 +64,7 @@ class CSubtreeTemp(Temp):
 
 
 @cluster_pass
-def decompose_expressions(cluster: Cluster, sregistry: SymbolRegistry = None, options = None, **kwargs) -> Cluster:
+def decompose_clusters(cluster: Cluster, sregistry: SymbolRegistry = None, options = None, **kwargs) -> Cluster:
     """
     Heuristically decomposes the expression tree into smaller subtrees to avoid
     deeply nested expressions, which can lead to poor performance and memory usage.
