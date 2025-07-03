@@ -3,6 +3,7 @@ from functools import singledispatch
 from typing import NamedTuple
 from sympy import Expr, Indexed, Symbol
 
+from devito import logger
 from devito.symbolics.manipulation import _uxreplace
 from devito.tools.data_structures import DAG, frozendict
 from devito.types.misc import Temp
@@ -79,8 +80,10 @@ def decompose_clusters(cluster: Cluster, sregistry: SymbolRegistry = None, optio
     exprs = as_list(cluster.exprs)
 
     # Choose expressions to extract into temporaries based on heuristics
-    candidates = list(_find_candidates(exprs))
-    targets = pick_temporaries(candidates)
+    candidates = find_candidates(exprs)
+    targets = pick_temporaries(candidates, limit=1)
+
+    logger.debug(f"Cluster decomposition found {len(targets)} targets")
 
     # Map expressions to temporaries
     temps: dict[tuple[Expr, frozendict], CSubtreeTemp] = {}
@@ -127,27 +130,38 @@ def compute_cost_heuristic(candidate: Candidate) -> float:
     """
     # FIXME: This is just some arbitrary bullshit for now
     if candidate.subtree_size == 1:
-        return -1.0  # No reason to extract leaves
+        return 0.0  # No reason to extract leaves
 
     return candidate.depth ** 2 + candidate.subtree_size
 
 
-def pick_temporaries(candidates: list[Candidate]) -> list[Candidate]:
+def pick_temporaries(candidates: list[Candidate],
+                     threshold: float = 3.0, limit: int = -1) -> list[Candidate]:
     """
-    Picks nodes to extract into temporaries.
+    Picks expressions to extract into temporaries.
+
+    Expressions are chosen if their heuristic cost exceeds the mean by at
+    least `threshold` standard deviations, up to the `limit` most highly
+    weighted candidates.
     """
     if not candidates:
         return []
 
     # FIXME: More arbitrary bullshit
     # We pick nodes whose costs deviate significantly from the mean
-    costs = list(map(compute_cost_heuristic, candidates))
-    mean, std = np.mean(costs), np.std(costs)
-    threshold = mean + 1 * std
+    costs = {cand: compute_cost_heuristic(cand) for cand in candidates}
+    mean, std = np.mean(list(costs.values())), np.std(list(costs.values()))
 
-    # Make unique
-    return list({cand for cand, cost in zip(candidates, costs)
-                 if cost >= threshold and cand.subtree_size > 1})
+    # Min cost for extraction
+    min_cost = mean + threshold * std
+
+    # Filter candidates based on cost and subtree size
+    candidates = [cand for cand, cost in costs.items()
+                  if cost >= min_cost and cand.subtree_size > 1]
+
+    # Sort by cost for limiting
+    candidates = sorted(candidates, key=costs.get, reverse=True)
+    return candidates[:limit] if limit >= 0 else candidates
 
 
 def _toposort(exprs: list[Expr]) -> list[Expr]:
@@ -181,9 +195,7 @@ def _toposort(exprs: list[Expr]) -> list[Expr]:
     return processed
 
 
-@singledispatch
-def _find_candidates(obj: object, depth: int = 0,
-                     conditionals: frozendict | None = None) -> Iterator[Candidate]:
+def find_candidates(exprs: Iterable[Expr]) -> list[Candidate]:
     """
     Finds candidate expressions for extraction into temporaries.
 
@@ -191,7 +203,14 @@ def _find_candidates(obj: object, depth: int = 0,
     through iterables and other intermediaries; subtree size counts only the number of
     descendant expression nodes (i.e. the number of candidates in the subtree).
     """
-    yield from ()
+    return list(_find_candidates(exprs))
+
+
+@singledispatch
+def _find_candidates(obj, depth: int = 0,
+                     conditionals: frozendict | None = None) -> Iterator[Candidate]:
+    yield from _find_candidates(obj.args, depth=depth + 1,
+                                conditionals=conditionals)
 
 
 @_find_candidates.register(tuple)
