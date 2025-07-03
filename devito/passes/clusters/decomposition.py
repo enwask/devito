@@ -68,9 +68,9 @@ def decompose_expressions(cluster: Cluster, sregistry: SymbolRegistry = None, op
     """
     # Min dtype for temporaries
     try:
-        dtype = np.promote_types(options['scalar-min-type'], cluster.dtype).type
+        min_dtype = np.promote_types(options['scalar-min-type'], cluster.dtype).type
     except TypeError:
-        dtype = cluster.dtype
+        min_dtype = cluster.dtype
 
     # Get a list of expressions in the cluster (or accept expressions directly)
     exprs = as_list(cluster.exprs)
@@ -84,7 +84,7 @@ def decompose_expressions(cluster: Cluster, sregistry: SymbolRegistry = None, op
     for candidate in targets:
         # Create a temporary to replace this symbol with
         key = candidate.key()
-        dtype = np.promote_types(extract_dtype(candidate.expr), dtype).type
+        dtype = np.promote_types(extract_dtype(candidate.expr), min_dtype).type
         temps[key] = CSubtreeTemp(name=sregistry.make_name(prefix='d'), dtype=dtype)
 
     processed: list[Expr] = []
