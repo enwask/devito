@@ -3,7 +3,7 @@ from collections.abc import Iterable
 from concurrent.futures import Future
 from enum import Enum
 from itertools import groupby
-from threading import Event, Lock
+from threading import Event, Lock, RLock
 from types import TracebackType
 from queue import Queue as TaskQueue
 from typing import Generic, TypeVar, override
@@ -229,12 +229,6 @@ class Task(Generic[ClusterType]):
         # Whether this is a continuation (i.e. has received results from children)
         self.is_continuation = False
 
-    def args(self) -> tuple[list[ClusterType], int, IterationSpace | None]:
-        """
-        Returns the arguments to be passed to the `ParallelCallback`.
-        """
-        return self.clusters, self.level, self.prefix
-
     def put_results(self, results: list[ClusterType]) -> None:
         """
         Receives the results of child tasks and marks this task as a continuation.
@@ -344,7 +338,7 @@ class ParallelClusterVisitor(ClusterVisitor[ClusterType]):
 
         # Map of parent task IDs to the results they're waiting for
         self._tasks_waiting: dict[TaskId, TaskResults[ClusterType]] = {}
-        self._tasks_waiting_lock = Lock()
+        self._tasks_waiting_lock = RLock()
 
         # Root result + event for marking completion of the root task
         self._root_task_result: list[ClusterType] | None = None
@@ -411,7 +405,7 @@ class ParallelClusterVisitor(ClusterVisitor[ClusterType]):
         return self
 
     def __exit__(self, exc_type: type[Exception], exc_value: Exception,
-                 traceback: TracebackType) -> None:
+                 traceback: TracebackType) -> bool:
         """
         If threading is enabled, cleans up the executor and waits for all threads to
         cleanly exit. Otherwise, this is a no-op.
@@ -433,6 +427,9 @@ class ParallelClusterVisitor(ClusterVisitor[ClusterType]):
             self._executor.__exit__(exc_type, exc_value, traceback)
             self._executor = None
             self._is_threaded = False
+
+        # Don't suppress exceptions
+        return False
 
     @override
     def _process_fatd(self, clusters: list[ClusterType], level: int,
@@ -509,7 +506,7 @@ class ParallelClusterVisitor(ClusterVisitor[ClusterType]):
         tasks: list[Task[ClusterType]] = []
         results = TaskResults(parent_task=task)
 
-        clusters, level, _ = task.args()
+        clusters, level = task.clusters, task.level
         for k, g in groupby(clusters, key=lambda i: self._make_key(i, level)):
             pfx = k[0]
             if level > len(pfx):
@@ -565,8 +562,9 @@ class ParallelClusterVisitor(ClusterVisitor[ClusterType]):
 
         # The task is not a continuation
         if self._mode == ParallelClusterVisitor.Mode.APPLY_THEN_DIVIDE:
-            # In FATD, apply the callback before the divide step
-            task.clusters = self.callback(task.clusters, task.prefix, **task.kwargs)
+            # In FATD, apply callback before the divide step (except on the root task)
+            if task.parent_id is not None:
+                task.clusters = self.callback(task.clusters, task.prefix, **task.kwargs)
 
         # Assign an identifier and divide into sub-tasks
         task_id = new_task_id()
