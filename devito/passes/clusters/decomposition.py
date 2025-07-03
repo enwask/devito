@@ -186,6 +186,10 @@ def _find_candidates(obj: object, depth: int = 0,
                      conditionals: frozendict | None = None) -> Iterator[Candidate]:
     """
     Finds candidate expressions for extraction into temporaries.
+
+    Expression nodes get a computed depth and subtree size. The depth counts traversal
+    through iterables and other intermediaries; subtree size counts only the number of
+    descendant expression nodes (i.e. the number of candidates in the subtree).
     """
     yield from ()
 
@@ -225,7 +229,9 @@ def _(expr: Expr, depth: int = 0,
       conditionals: frozendict | None = None) -> Iterator[Candidate]:
     # Candidate for the root of this subtree
     root = Candidate(expr=expr, depth=depth, conditionals=conditionals)
-    for candidate in _find_candidates(expr.args, depth=depth + 1,
+
+    # tuple visitor will increment depth for us
+    for candidate in _find_candidates(expr.args, depth=depth,
                                       conditionals=conditionals):
         # Update subtree size and propagate this candidate
         root.subtree_size += candidate.subtree_size
