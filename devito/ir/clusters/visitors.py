@@ -2,8 +2,8 @@ from collections import defaultdict
 from collections.abc import Iterable
 from concurrent.futures import Future
 from enum import Enum
-from itertools import groupby
-from threading import Event, Lock, RLock
+from itertools import chain, groupby
+from threading import Event, RLock
 from types import TracebackType
 from queue import Queue as TaskQueue
 from typing import Generic, TypeVar, override
@@ -38,7 +38,7 @@ class Prefix(IterationSpace):
                      self.guards, self.properties, self.syncs))
 
 
-# The type of elements operated on by a `ClusterVisitor`
+# Some visitors (e.g. Fusion) operate on ClusterGroups instead of Clusters
 ClusterType = TypeVar('ClusterType', bound=Cluster | ClusterGroup)
 
 
@@ -287,12 +287,12 @@ class TaskResults(Generic[ClusterType]):
 
     def flatten(self) -> list[ClusterType]:
         """
-        Flattens the results into a single list of Clusters.
+        Flattens the results into a single list of ClusterType instances.
         """
         if not self.ready():
             raise RuntimeError("Not all results are ready yet")
 
-        return flatten(self.results)
+        return list(chain(*self.results))
 
 
 class ParallelClusterVisitor(ClusterVisitor[ClusterType]):
