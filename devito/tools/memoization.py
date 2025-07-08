@@ -1,5 +1,6 @@
 from collections import defaultdict
 from collections.abc import Hashable, Iterator
+from concurrent.futures import Future
 from functools import partial, update_wrapper, wraps
 from threading import RLock
 from typing import Callable, Generic, Protocol, TypeVar
@@ -34,20 +35,20 @@ def has_memoized_methods(cls: type[InstanceType]) -> type[InstanceType]:
     if hasattr(cls, '__init_finalize__'):
         # Don't modify the class if we've already applied this decorator
         init_finalize = cls.__init_finalize__
-        if hasattr(init_finalize, '__has_memoized_methods'):
+        if hasattr(init_finalize, '_memoized_meth__initialized'):
             return cls
 
         @wraps(init_finalize)
         def _init_finalize(obj, *args, **kwargs) -> None:
             # Apply our caches first
-            obj._memoized_method_cache = {}
-            obj._memoized_method_locks = defaultdict(RLock)
+            obj._memoized_meth__futures = {}
+            obj._memoized_meth__lock = RLock()
 
             # Call the original __init_finalize__ method
             init_finalize(obj, *args, **kwargs)
 
         # Set our flag to avoid re-initialization
-        _init_finalize.__has_memoized_methods = True
+        _init_finalize._memoized_meth__initialized = True
 
         # Apply the replacement
         cls.__init_finalize__ = _init_finalize
@@ -55,8 +56,8 @@ def has_memoized_methods(cls: type[InstanceType]) -> type[InstanceType]:
 
     # Make sure we're not modifying a class that already has this decorator
     new = cls.__new__
-    if hasattr(new, '__has_memoized_methods'):
-        return new
+    if hasattr(new, '_memoized_meth__initialized'):
+        return cls
 
     @wraps(new)
     def _new(_cls, *args, **kwargs):
@@ -67,13 +68,13 @@ def has_memoized_methods(cls: type[InstanceType]) -> type[InstanceType]:
             obj = new(_cls, *args, **kwargs)
 
         # Initialize the method cache and locks
-        obj._memoized_method_cache = {}
-        obj._memoized_method_locks = defaultdict(RLock)
+        obj._memoized_meth__futures = {}
+        obj._memoized_meth__lock = RLock()
 
         return obj
 
     # Set our flag to avoid re-initialization
-    _new.__has_memoized_methods = True
+    _new._memoized_meth__initialized = True
 
     # Apply the replacement
     cls.__new__ = staticmethod(_new)
@@ -91,26 +92,20 @@ class memoized_meth(Generic[InstanceType, ReturnType, CachedType]):
 
     def __init__(self, meth: Method[InstanceType, ReturnType]) -> None:
         self._meth = meth
-        self._lock = RLock()  # Global lock for safely initializing per-instance locks
-        update_wrapper(self, meth)
+        update_wrapper(self, self._meth)
 
-    def _acquire_method_lock(self, obj: InstanceType,
-                             *args: Hashable, **kwargs: Hashable) -> RLock:
+    def _get_method_lock(self, obj: InstanceType,
+                         *args: Hashable, **kwargs: Hashable) -> RLock:
         """
         Acquires a lock for the method call on the given object and arguments.
         """
-        # Briefly use the global lock to safely access the per-instance lock in
-        # case it hasn't been initialized yet
-        with self._lock:
-            # TODO: Should we lock on the full method call for more granularity?
-            return obj._memoized_method_locks[self._meth]
+        return obj._memoized_meth__lock
 
-    def _to_cached(self, value: ReturnType) -> CachedType:
+    def _compute_value(self, obj: InstanceType, *args: Hashable, **kwargs: Hashable) -> CachedType:
         """
-        Converts the return value of the method to a cached type.
-        This can be overridden in subclasses to customize caching behavior.
+        Computes the value of the method call upon a cache miss.
         """
-        return value
+        return self._meth(obj, *args, **kwargs)
 
     def _postprocess(self, value: CachedType, cache_hit: bool) -> ReturnType:
         """
@@ -129,38 +124,76 @@ class memoized_meth(Generic[InstanceType, ReturnType, CachedType]):
 
         return partial(self, obj)
 
+    def _acquire_future(self, obj: InstanceType, *args: Hashable, **kwargs: Hashable) \
+            -> tuple[Future[CachedType], bool]:
+        """
+        Acquires a Future for the method call on the given object and arguments.
+        If the value is cached, this will be a future for a result that is being
+        (or has been) computed previously, possibly by another thread.
+
+        Otherwise, invokes the decorated method and returns a Future with the
+        newly computed value, placing it in the cache for future calls.
+
+        Returns the Future and a flag indicating whether it was a cache hit.
+        """
+        cache: dict[int, Future[CachedType]] = obj._memoized_meth__futures
+        key = hash((self._meth, args, frozenset(kwargs.items())))
+
+        future: Future[CachedType] | None = None
+        compute_now = False
+        with self._get_method_lock(obj, *args, **kwargs):
+            future = cache.get(key, None)
+            if future is None:
+                # If not yet cached, create a new Future
+                cache[key] = future = Future()
+                compute_now = True
+
+        # Proceed with computation outside of the lock, if we missed the cache
+        if compute_now:
+            try:
+                # Compute the value and set it in the Future
+                value = self._compute_value(obj, *args, **kwargs)
+                future.set_result(value)
+
+            except Exception as e:
+                # If an error occurs, set it in the Future to propagate to consumers
+                future.set_exception(e)
+
+        # Either way, return the Future
+        return future, not compute_now
+
+    def _ensure_has_memoized_methods(self, obj: InstanceType) -> None:
+        """
+        Ensures that the object has been decorated with `@has_memoized_methods`.
+        We do this here to avoid accidentally catching an `AttributeError` from
+        the decorated method itself.
+        """
+        try:
+            self._get_method_lock(obj)
+        except AttributeError as e:
+            # If the cache is missing, the class doesn't have the required decorator
+            cls = type(obj)
+            raise RuntimeError(f"Class '{cls.__name__}' must be decorated with "
+                               "@has_memoized_methods to use @memoized_meth") from e
+
     def __call__(self, obj: InstanceType,
                  *args: Hashable, **kwargs: Hashable) -> ReturnType:
         """
         Invokes the memoized method, caching the result if it hasn't been evaluated yet.
         """
-        try:
-            cache: dict[int, CachedType] = obj._memoized_method_cache
+        # Make sure the object has the memoization infrastructure
+        self._ensure_has_memoized_methods(obj)
 
-            # If arguments are not hashable, just evaluate the method directly
-            if not all(isinstance(arg, Hashable) for arg in args):
-                return self._meth(obj, *args, **kwargs)
+        # If arguments are not hashable, just evaluate the method directly
+        if not all(isinstance(arg, Hashable) for arg in args):
+            return self._meth(obj, *args, **kwargs)
 
-            # Key for the method call with all arguments
-            key = hash((self._meth, args, frozenset(kwargs.items())))
+        # Acquire the Future for the method call
+        future, cache_hit = self._acquire_future(obj, *args, **kwargs)
 
-            with self._acquire_method_lock(obj, *args, **kwargs):
-                cache_hit = key in cache
-                if not cache_hit:
-                    # If the result is not cached, call the method and cache the result
-                    cache[key] = self._to_cached(self._meth(obj, *args, **kwargs))
-
-                # Retrieve and post-process the (possibly newly) cached result
-                result = self._postprocess(cache[key], cache_hit)
-
-            return result
-
-        except AttributeError as e:
-            # If the cache is missing, the class doesn't have the required decorator
-            cls = type(obj)
-            raise RuntimeError("Class '%s' must be decorated with "
-                               "@has_memoized_methods to use @memoized_meth"
-                               % cls.__name__) from e
+        # Return the result or propagate any exceptions
+        result = self._postprocess(future.result(), cache_hit)
+        return result
 
 
 ElementType = TypeVar('ElementType', covariant=True)
@@ -249,10 +282,12 @@ class memoized_generator(memoized_meth[InstanceType, Iterator[ElementType],
     def __init__(self, meth: GeneratorMethod[InstanceType, ElementType]) -> None:
         super().__init__(meth)
 
-    def _to_cached(self, value: Iterator[ElementType]) -> SafeTee[ElementType]:
+    def _compute_value(self, obj: InstanceType, *args: Hashable, **kwargs: Hashable) \
+            -> SafeTee[ElementType]:
         """
         Caches the returned generator wrapped in a SafeTee for buffer sharing.
         """
+        value = super()._compute_value(obj, *args, **kwargs)
         return SafeTee(value)
 
     def _postprocess(self, value: SafeTee[ElementType],
