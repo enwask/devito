@@ -5,7 +5,7 @@ from enum import Enum
 from itertools import chain, groupby
 from threading import RLock
 from types import TracebackType
-from queue import Queue as TaskQueue
+from queue import LifoQueue as TaskQueue
 from typing import Generic, TypeVar, override
 from uuid import UUID, uuid4
 
