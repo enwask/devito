@@ -3,7 +3,7 @@ from collections.abc import Iterable
 from concurrent.futures import Future
 from enum import Enum
 from itertools import chain, groupby
-from threading import Event, RLock
+from threading import RLock
 from types import TracebackType
 from queue import Queue as TaskQueue
 from typing import Generic, TypeVar, override
@@ -340,9 +340,8 @@ class ParallelClusterVisitor(ClusterVisitor[ClusterType]):
         self._tasks_waiting: dict[TaskId, TaskResults[ClusterType]] = {}
         self._tasks_waiting_lock = RLock()
 
-        # Root result + event for marking completion of the root task
+        # Root result
         self._root_task_result: list[ClusterType] | None = None
-        self._root_task_event = Event()
 
         # Exception from a worker thread, if any
         self._exception: Exception | None = None
@@ -414,10 +413,6 @@ class ParallelClusterVisitor(ClusterVisitor[ClusterType]):
             if self._executor is None:
                 raise RuntimeError("Executor was cleared or not initialized")
 
-            # Signal the worker threads
-            for _ in range(self._executor.max_workers):
-                self._task_queue.put(None)
-
             # Wait for all worker threads to finish
             for future in self._futures:
                 future.result()  # Block until the thread closes
@@ -471,7 +466,6 @@ class ParallelClusterVisitor(ClusterVisitor[ClusterType]):
 
         # Clean up from a potential previous run
         self._tasks_waiting.clear()
-        self._root_task_event.clear()
         self._root_task_result = None
         self._exception = None
 
@@ -480,8 +474,8 @@ class ParallelClusterVisitor(ClusterVisitor[ClusterType]):
                          prefix=prefix, **kwargs)
         self._task_queue.put(root_task)
 
-        # Wait for the root task to finish processing
-        self._root_task_event.wait()
+        # Do work on the main thread too, breaking out when we get a stop signal
+        self._worker()
 
         # Get a possible exception from worker threads, but finish cleanup first
         exception = self._exception
@@ -496,6 +490,16 @@ class ParallelClusterVisitor(ClusterVisitor[ClusterType]):
 
         # Otherwise, return the result of the root task
         return self._root_task_result
+
+    def _signal_done(self) -> None:
+        """
+        Called when the root task is done processing; signals worker threads
+        (and the main thread) to stop spinning.
+        """
+        # +1 for the main thread
+        for i in range(self._executor.max_workers + 1):
+            # Put a None task in the queue to signal the worker threads to stop
+            self._task_queue.put(None)
 
     def _divide(self, task_id: TaskId | None, task: Task[ClusterType]) \
             -> tuple[list[Task[ClusterType]], TaskResults[ClusterType]]:
@@ -540,7 +544,7 @@ class ParallelClusterVisitor(ClusterVisitor[ClusterType]):
             # If this is the root task, store its result
             if task.parent_id is None:
                 self._root_task_result = task.clusters
-                self._root_task_event.set()
+                self._signal_done()
                 return
 
             # Otherwise, send results back to the parent task
@@ -616,7 +620,7 @@ class ParallelClusterVisitor(ClusterVisitor[ClusterType]):
             except Exception as e:
                 # If an exception occured, store it and signal the root task
                 self._exception = e
-                self._root_task_event.set()
+                self._signal_done()
 
 
 class cluster_pass:
