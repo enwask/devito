@@ -1,4 +1,5 @@
 from collections import defaultdict
+from functools import lru_cache
 
 from sympy import Add, Mul, S, collect
 
@@ -46,8 +47,17 @@ def factorize(cluster, *args, options=None, **kwargs):
             cost_handle, handle = cost_prev, handle_prev
 
         processed.append(handle)
+    _collect.cache_clear()
 
     return cluster.rebuild(processed)
+
+
+@lru_cache(maxsize=128)
+def _collect(expr, syms):
+    """
+    Cached version of `sympy.collect`, cleared between factorization passes.
+    """
+    return collect(expr, syms, evaluate=False)
 
 
 def collect_special(expr, strategy):
@@ -92,7 +102,7 @@ def collect_special(expr, strategy):
     # Collect common funcs
     if len(w_funcs) > 1:
         w_funcs = Add(*w_funcs, evaluate=False)
-        w_funcs = collect(w_funcs, funcs, evaluate=False)
+        w_funcs = _collect(w_funcs, tuple(funcs))
         try:
             terms.extend([Mul(k, collect_const(v), evaluate=False)
                           for k, v in w_funcs.items()])
@@ -103,7 +113,7 @@ def collect_special(expr, strategy):
 
     # Collect common pows
     w_pows = Add(*w_pows, evaluate=False)
-    w_pows = collect(w_pows, pows, evaluate=False)
+    w_pows = _collect(w_pows, tuple(pows))
     try:
         terms.extend([Mul(k, collect_const(v), evaluate=False)
                       for k, v in w_pows.items()])
@@ -114,7 +124,7 @@ def collect_special(expr, strategy):
     w_coeffs = Add(*w_coeffs, evaluate=False)
     symbols = retrieve_symbols(w_coeffs)
     if len(set(symbols)) != len(symbols):
-        w_coeffs = collect(w_coeffs, symbols, evaluate=False)
+        w_coeffs = _collect(w_coeffs, tuple(symbols))
         try:
             terms.extend([Mul(k, collect_const(v), evaluate=False)
                           for k, v in w_coeffs.items()])
