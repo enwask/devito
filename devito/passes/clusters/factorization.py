@@ -56,6 +56,10 @@ def factorize(cluster, *args, options=None, **kwargs):
 def _collect(expr, syms):
     """
     Cached version of `sympy.collect`, cleared between factorization passes.
+
+    The sympy function is very slow and for some operators gets called on common
+    subexpressions, so we can save a lot of computation by caching within the
+    context of a single factorization pass.
     """
     return collect(expr, syms, evaluate=False)
 
