@@ -1,11 +1,13 @@
 from collections import defaultdict
+from typing import TypeVar, TYPE_CHECKING
 
-from sympy import Add, Mul, S, collect
+from sympy import Add, Equality, Expr, Mul, S, collect
 
 from devito.ir import cluster_pass
 from devito.symbolics import (BasicWrapperMixin, estimate_cost, reuse_if_untouched,
                               retrieve_symbols, q_routine)
 from devito.tools import ReducerMap
+from devito.tools.visitors import dag_visitor
 from devito.types.object import AbstractObject
 
 __all__ = ['factorize']
@@ -32,22 +34,17 @@ def factorize(cluster, *args, options=None, **kwargs):
     except TypeError:
         strategy = 'basic'
 
-    processed = []
-    for expr in cluster.exprs:
-        handle = collect_nested(expr, strategy)
-        cost_handle = estimate_cost(handle)
+    handle = collect_nested(cluster.exprs, strategy)
+    costs_handle = list(map(estimate_cost, handle))
 
-        if cost_handle >= MIN_COST_FACTORIZE:
-            handle_prev = handle
-            cost_prev = estimate_cost(expr)
-            while cost_handle < cost_prev:
-                handle_prev, handle = handle, collect_nested(handle, strategy)
-                cost_prev, cost_handle = cost_handle, estimate_cost(handle)
-            cost_handle, handle = cost_prev, handle_prev
+    if any(cost >= MIN_COST_FACTORIZE for cost in costs_handle):
+        handle_prev, costs_prev = handle, list(map(estimate_cost, cluster.exprs))
+        while any(cost < cost_prev for cost, cost_prev in zip(costs_handle, costs_prev)):
+            handle_prev, handle = handle, collect_nested(handle, strategy)
+            costs_prev, costs_handle = costs_handle, list(map(estimate_cost, handle))
+        costs_handle, handle = costs_prev, handle_prev
 
-        processed.append(handle)
-
-    return cluster.rebuild(processed)
+    return cluster.rebuild(handle)
 
 
 def collect_special(expr, strategy):
@@ -190,40 +187,63 @@ strategies = {
 }
 
 
-def _collect_nested(expr, strategy):
+# Describes the type being visited by _collect_nested
+ExprType = TypeVar('ExprType', bound=Expr | tuple[Expr])
+
+
+@dag_visitor()
+def _collect_nested(maybe_exprs: ExprType, strategy: str) \
+        -> tuple[ExprType, dict | ReducerMap]:
     """
     Recursion helper for `collect_nested`.
     """
+    if isinstance(maybe_exprs, tuple):
+        exprs, candidates = zip(*[_collect_nested(i, strategy) for i in maybe_exprs])
+        return tuple(exprs), ReducerMap.fromdicts(*candidates)
+
+    # Not a tuple
+    expr = maybe_exprs
+
     # Return semantic (rebuilt expression, factorization candidates)
     if expr.is_Number:
         return expr, {'coeffs': expr}
-    elif q_routine(expr):
+
+    if q_routine(expr):
         # E.g., a DefFunction
         args, candidates = zip(*[_collect_nested(a, strategy) for a in expr.args])
         return expr.func(*args, evaluate=False), {}
-    elif expr.is_Function:
+
+    if expr.is_Function:
         return expr, {'funcs': expr}
-    elif expr.is_Pow:
+
+    if expr.is_Pow:
         return expr, {'pows': expr}
-    elif (expr.is_Symbol or expr.is_Indexed or not expr.args or
+
+    if (expr.is_Symbol or expr.is_Indexed or not expr.args or
           isinstance(expr, (BasicWrapperMixin, AbstractObject))):
         return expr, {}
-    elif expr.is_Add:
+
+    if expr.is_Add:
         return strategies[strategy](expr, strategy), {}
-    elif expr.is_Mul:
+
+    if expr.is_Mul:
         args, candidates = zip(*[_collect_nested(a, strategy) for a in expr.args])
         expr = reuse_if_untouched(expr, args, evaluate=True)
         return expr, ReducerMap.fromdicts(*candidates)
-    elif expr.is_Equality:
+
+    if expr.is_Equality:
+        if TYPE_CHECKING:
+            assert isinstance(expr, Equality)
+
         rhs, _ = _collect_nested(expr.rhs, strategy)
         expr = reuse_if_untouched(expr, (expr.lhs, rhs))
         return expr, {}
-    else:
-        args, candidates = zip(*[_collect_nested(a, strategy) for a in expr.args])
-        return expr.func(*args), ReducerMap.fromdicts(*candidates)
+
+    args, candidates = zip(*[_collect_nested(a, strategy) for a in expr.args])
+    return expr.func(*args), ReducerMap.fromdicts(*candidates)
 
 
-def collect_nested(expr, strategy='basic'):
+def collect_nested(exprs: tuple[Expr], strategy='basic') -> tuple[Expr]:
     """
     Collect numeric coefficients, trascendental functions, pows, and other
     symbolic objects across all levels of the expression tree.
@@ -233,4 +253,4 @@ def collect_nested(expr, strategy='basic'):
     expr : expr-like
         The expression to be factorized.
     """
-    return _collect_nested(expr, strategy)[0]
+    return _collect_nested.visit(exprs, strategy)[0]
