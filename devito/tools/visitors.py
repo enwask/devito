@@ -1,6 +1,9 @@
 import inspect
+from functools import update_wrapper
+from threading import local
+from typing import Callable, Generic, Hashable, TypeVar
 
-__all__ = ['GenericVisitor']
+__all__ = ['GenericVisitor', 'DagVisitor', 'dag_visitor']
 
 
 class GenericVisitor:
@@ -123,3 +126,78 @@ class GenericVisitor:
 
     def visit_object(self, o, **kwargs):
         return self.default_retval()
+
+
+# Generic return type for a DAG visitor
+ReturnType = TypeVar('ReturnType', covariant=True)
+
+
+class DagVisitor(Generic[ReturnType]):
+    """
+    A generic wrapper for a DAG visitor which provides a visit method that memoizes
+    calls to the wrapped function, allowing the original function to use recursive
+    calls as normal.
+
+    The memo table is in thread-local storage, so concurrency within nested calls is
+    unsafe but the visitor can be parallelized at the root level.
+    """
+
+    def __init__(self, func: Callable[..., ReturnType],
+                 key: Callable[..., Hashable] | None = None) -> None:
+        self._func = func
+        self._key = key or (lambda *a, **kw: (a, frozenset(kw.items())))
+
+        self._local = local()
+        self._local.memo = None
+
+        update_wrapper(self, func)
+
+    def visit(self, *args, **kwargs) -> ReturnType:
+        """
+        Applies the visitor with memoization.
+        """
+        if self._local.memo is not None:
+            raise RuntimeError("DagVisitor.visit() called while already in "
+                               "a traversal context.")
+
+        # Initialize memo and call the wrapped function
+        self._local.memo = {}
+        res = self(*args, **kwargs)
+
+        # Clear the memo table after the call
+        self._local.memo = None
+        return res
+
+    def __call__(self, *args, **kwargs) -> ReturnType:
+        """
+        Invokes the wrapped function. If in a traversal context, uses the memo table.
+        """
+        if self._local.memo is None:
+            return self._func(*args, **kwargs)
+
+        key = self._key(*args, **kwargs)
+        memo = self._local.memo
+
+        if key in memo:
+            return memo[key]
+
+        result = self._func(*args, **kwargs)
+        memo[key] = result
+        return result
+
+
+def dag_visitor(key: Callable[..., Hashable] | None = None) \
+        -> Callable[[Callable[..., ReturnType]], DagVisitor[ReturnType]]:
+    """
+    A decorator to create a DagVisitor for a function.
+
+    May be passed a key function to customize how memoization keys are generated;
+    by default, positional and keyword arguments are hashed together.
+    """
+    def decorator(fun: Callable[..., ReturnType]) -> DagVisitor[ReturnType]:
+        """
+        Decorates a function to create a DagVisitor.
+        """
+        return DagVisitor(fun, key)
+
+    return decorator
