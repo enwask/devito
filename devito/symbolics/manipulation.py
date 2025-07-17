@@ -17,6 +17,7 @@ from devito.symbolics.unevaluation import (
     Add as UnevalAdd, Mul as UnevalMul, Pow as UnevalPow, UnevaluableMixin
 )
 from devito.tools import as_list, as_tuple, flatten, split, transitive_closure
+from devito.tools.visitors import dag_visitor
 from devito.types.basic import Basic, Indexed
 from devito.types.array import ComponentAccess
 from devito.types.equation import Eq
@@ -50,9 +51,11 @@ def uxreplace(expr, rule):
     Finally, `uxreplace` supports Reconstructable objects, that is, it searches
     for replacement opportunities inside the Reconstructable's `__rkwargs__`.
     """
-    return _uxreplace(expr, rule)[0]
+    # return _uxreplace(expr, rule)[0]
+    return _uxreplace.visit(expr, rule)[0]
 
 
+@dag_visitor(key=lambda expr, _: expr)
 def _uxreplace(expr, rule):
     if expr in rule:
         v = rule[expr]
