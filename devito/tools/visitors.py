@@ -1,7 +1,7 @@
 import inspect
 from functools import update_wrapper
 from threading import local
-from typing import Callable, Generic, Hashable, TypeVar
+from typing import Callable, Generic, Hashable, ParamSpec, TypeVar
 
 __all__ = ['GenericVisitor', 'DagVisitor', 'dag_visitor']
 
@@ -128,11 +128,12 @@ class GenericVisitor:
         return self.default_retval()
 
 
-# Generic return type for a DAG visitor
+# Generic parameters + return type for a DAG visitor
+Params = ParamSpec('Params')
 ReturnType = TypeVar('ReturnType', covariant=True)
 
 
-class DagVisitor(Generic[ReturnType]):
+class DagVisitor(Generic[Params, ReturnType]):
     """
     A generic wrapper for a DAG visitor which provides a visit method that memoizes
     calls to the wrapped function, allowing the original function to use recursive
@@ -142,7 +143,7 @@ class DagVisitor(Generic[ReturnType]):
     unsafe but the visitor can be parallelized at the root level.
     """
 
-    def __init__(self, func: Callable[..., ReturnType],
+    def __init__(self, func: Callable[Params, ReturnType],
                  key: Callable[..., Hashable] | None = None) -> None:
         self._func = func
         self._key = key or (lambda *a, **kw: (a, frozenset(kw.items())))
@@ -152,7 +153,7 @@ class DagVisitor(Generic[ReturnType]):
 
         update_wrapper(self, func)
 
-    def visit(self, *args, **kwargs) -> ReturnType:
+    def visit(self, *args: Params.args, **kwargs: Params.kwargs) -> ReturnType:
         """
         Applies the visitor with memoization.
         """
@@ -168,7 +169,7 @@ class DagVisitor(Generic[ReturnType]):
         self._local.memo = None
         return res
 
-    def __call__(self, *args, **kwargs) -> ReturnType:
+    def __call__(self, *args: Params.args, **kwargs: Params.kwargs) -> ReturnType:
         """
         Invokes the wrapped function. If in a traversal context, uses the memo table.
         """
@@ -187,14 +188,14 @@ class DagVisitor(Generic[ReturnType]):
 
 
 def dag_visitor(key: Callable[..., Hashable] | None = None) \
-        -> Callable[[Callable[..., ReturnType]], DagVisitor[ReturnType]]:
+        -> Callable[[Callable[Params, ReturnType]], DagVisitor[Params, ReturnType]]:
     """
     A decorator to create a DagVisitor for a function.
 
     May be passed a key function to customize how memoization keys are generated;
     by default, positional and keyword arguments are hashed together.
     """
-    def decorator(fun: Callable[..., ReturnType]) -> DagVisitor[ReturnType]:
+    def decorator(fun: Callable[Params, ReturnType]) -> DagVisitor[Params, ReturnType]:
         """
         Decorates a function to create a DagVisitor.
         """
